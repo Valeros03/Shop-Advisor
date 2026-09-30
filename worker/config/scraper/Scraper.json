@@ -1,0 +1,10 @@
+{
+  "name": "CustomScraper",
+  "limits": {
+    "dailyLimit": 1000,
+    "monthlyLimit": -1,
+    "lifetimeLimit": -1,
+    "rateLimitTps": null
+  },
+  "supported_markets": ["amazon.it", "amazon.fr", "amazon.de"]
+}

@@ -2,9 +2,11 @@ import { BaseWorker } from "../worker";
 import { Task, WorkerResult, WorkerLimits, AmazonMarket } from "../types";
 import * as cheerio from "cheerio";
 import { gotScraping } from "got-scraping";
+// @ts-ignore
+// @ts-ignore
 import { CookieJar } from "tough-cookie";
-import { notifier } from "./service/NotificationService"; 
-import { ProductUpdater } from "./updater";
+import { notifier } from "../service/NotificationService";
+import { ProductUpdater } from "../Updater";
 
 interface PartialCluster {
     asin: string;
@@ -149,7 +151,7 @@ export class CustomScraperWorker extends BaseWorker {
                 const task = scheduledJob.cluster.tasks[i];
                 
                 const result = await this.scrapeSingleMarket(task);
-                await updater.submitResult(task, result);
+                await updater.submitResult(task.asin, task.market, result);
 
                 // REGOLA TASSATIVA SULLE MICRO-PAUSE: 1.5s - 15s randomici per ogni singola tab
                 if (i < scheduledJob.cluster.tasks.length - 1) {
@@ -183,7 +185,7 @@ export class CustomScraperWorker extends BaseWorker {
     // =====================================================================
     // CORE DI ESTRAZIONE E GESTIONE DOM/AJAX
     // =====================================================================
-    private async scrapeSingleMarket(task: Task): Promise<WorkerResult> {
+    protected async scrapeSingleMarket(task: Task): Promise<WorkerResult> {
         try {
             console.log(`[Scraper - ${this.name}] Fetching ${task.asin} su ${task.market}...`);
             const url = `https://www.${task.market}/dp/${task.asin}`;
@@ -192,7 +194,7 @@ export class CustomScraperWorker extends BaseWorker {
             const $ = cheerio.load(html);
 
             // Anti-Bot Fatale (CAPTCHA)
-            if ($('title').text().includes('Robot Check') \vert{}\vert{}$('form[action="/errors/validateCaptcha"]').length > 0) {
+            if ($('title').text().includes('Robot Check') ||$('form[action="/errors/validateCaptcha"]').length > 0) {
                 await notifier.sendAlert("CAPTCHA RILEVATO", `Blocco WAF su ${task.market} per ${task.asin}.`);
                 throw new Error("CAPTCHA_DETECTED");
             }
@@ -203,7 +205,7 @@ export class CustomScraperWorker extends BaseWorker {
             }
 
             // Unqualified BuyBox (Senza BuyBox principale ma ci sono offerte esterne)
-            if ($('#unqualifiedBuyBox').length > 0 \vert{}\vert{} $('.apex-core-price-identifier').length === 0) {
+            if ($('#unqualifiedBuyBox').length > 0 || $('.apex-core-price-identifier').length === 0) {
                 console.log(`[Scraper - ${this.name}] Nessuna BuyBox per ${task.asin}. Lancio richiesta AJAX AOD...`);
                 return await this.extractFromAodAjax(task);
             }
