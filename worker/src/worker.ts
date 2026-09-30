@@ -3,7 +3,7 @@ import { Task, WorkerResult, WorkerLimits, ApiAdapter, AmazonMarket, ProductReco
 import axios from "axios";
 import { PrismaClient } from "@prisma/client";
 import { WorkerFactory } from "./factory/WorkerFactory";
-import { ProductUpdater } from "./updater";
+import { ProductUpdater } from "./Updater";
 
 // --- 1. BASE WORKER ---
 export abstract class BaseWorker {
@@ -177,11 +177,11 @@ export class ApiWorker extends BaseWorker {
                 const response = await axios(config);
                 const normalizedData = this.adapter.extractData(response.data);
 
-                await updater.submitResult(scheduledJob.task, { 
+                await updater.submitResult(scheduledJob.task.asin, scheduledJob.task.market, {
                     success: true, timestamp: new Date(), data: normalizedData 
                 });
             } catch (error: any) {
-                await updater.submitResult(scheduledJob.task, { 
+                await updater.submitResult(scheduledJob.task.asin, scheduledJob.task.market, {
                     success: false, error: error.message, timestamp: new Date() 
                 });
             }
@@ -364,7 +364,7 @@ export class SmartDispatcher {
     public async run(): Promise<void> {
         console.log("[Dispatcher] 🚀 Avvio pianificazione giornaliera...");
 
-        const loadedWorkers = await WorkerFactory.loadAllWorkers();
+        const loadedWorkers = await (await import("./factory/WorkerFactory")).WorkerFactory.loadAllWorkers();
         loadedWorkers.forEach(w => this.registerWorker(w));
 
         if (!(await this.healthCheck())) return;

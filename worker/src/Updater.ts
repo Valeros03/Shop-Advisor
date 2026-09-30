@@ -161,15 +161,15 @@ export class ProductUpdater {
             data: {
                 currentPriceIT: itLandedCost !== undefined ? itLandedCost : currentProduct.currentPriceIT,
                 shippingIT: itEntry !== undefined ? itEntry.data.shippingCost : undefined,
-                historyIT: appendHistory(currentProduct.historyIT, itEntry, itLandedCost),
+                historyIT: JSON.stringify(appendHistory(currentProduct.historyIT, itEntry, itLandedCost)),
 
                 currentPriceFR: frLandedCost !== undefined ? frLandedCost : currentProduct.currentPriceFR,
                 shippingFR: frEntry !== undefined ? frEntry.data.shippingCost : undefined,
-                historyFR: appendHistory(currentProduct.historyFR, frEntry, frLandedCost),
+                historyFR: JSON.stringify(appendHistory(currentProduct.historyFR, frEntry, frLandedCost)),
 
                 currentPriceDE: deLandedCost !== undefined ? deLandedCost : currentProduct.currentPriceDE,
                 shippingDE: deEntry !== undefined ? deEntry.data.shippingCost : undefined,
-                historyDE: appendHistory(currentProduct.historyDE, deEntry, deLandedCost),
+                historyDE: JSON.stringify(appendHistory(currentProduct.historyDE, deEntry, deLandedCost)),
 
                 priorityCode: newPriority,
                 unchangedCount: newUnchangedCount,
