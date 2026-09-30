@@ -1,0 +1,21 @@
+{
+  "name": "shop-advisor-worker",
+  "private": true,
+  "scripts": {
+    "refresh": "tsx src/index.ts --once",
+    "worker": "tsx src/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "cheerio": "^1.2.0",
+    "got-scraping": "^4.2.1",
+    "nodemailer": "^10.0.11",
+    "tsx": "^4.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.33",
+    "prisma": "^6.19.3",
+    "typescript": "^5.9.3"
+  }
+}

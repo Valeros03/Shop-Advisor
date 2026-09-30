@@ -1,0 +1,11 @@
+{
+  "name": "SerpApi",
+  "api_key": "LA_TUA_CHIAVE_QUI",
+  "limits": {
+    "dailyLimit": 3,
+    "monthlyLimit": 100,
+    "lifetimeLimit": -1,
+    "rateLimitTps": 2
+  },
+  "supported_markets": ["amazon.it", "amazon.fr", "amazon.de"]
+}

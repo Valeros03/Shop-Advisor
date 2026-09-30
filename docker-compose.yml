@@ -1,0 +1,47 @@
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: shopadvisor-db
+    restart: always
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: password123
+      POSTGRES_DB: shopadvisor
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: ./shop-advisor
+      dockerfile: Dockerfile
+    container_name: shopadvisor-app
+    ports:
+      - "80:3000"
+    volumes:
+      - ./shop-advisor:/app
+      - /app/node_modules
+    environment:
+      - DATABASE_URL=postgresql://admin:password123@db:5432/shopadvisor?schema=public
+    env_file:
+      - ./shop-advisor/.env
+    depends_on:
+      - db
+
+  product-worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    container_name: shopadvisor-product-worker
+    environment:
+      - DATABASE_URL=postgresql://admin:password123@db:5432/shopadvisor?schema=public
+    env_file:
+      - ./worker/.env
+    command: npm run worker
+    depends_on:
+      - db
+
+
+volumes:
+  pgdata:
