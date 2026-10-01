@@ -4,7 +4,9 @@
   "scripts": {
     "refresh": "tsx src/index.ts --once",
     "worker": "tsx src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "pretest": "DATABASE_URL=file:./test.db npx prisma@6.19.3 db push",
+    "test": "DATABASE_URL=file:./test.db sh -c 'for file in src/test/*.ts; do npx tsx \"$file\"; done'"
   },
   "dependencies": {
     "@prisma/client": "^6.19.3",

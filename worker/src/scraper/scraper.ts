@@ -2,6 +2,8 @@ import { BaseWorker } from "../worker";
 import { Task, WorkerResult, WorkerLimits, AmazonMarket } from "../types";
 import * as cheerio from "cheerio";
 import { gotScraping } from "got-scraping";
+import * as fs from "fs";
+import * as path from "path";
 // @ts-ignore
 // @ts-ignore
 import { CookieJar } from "tough-cookie";
@@ -182,6 +184,63 @@ export class CustomScraperWorker extends BaseWorker {
         }
     }
 
+    private performFallbackRegexSearch(html: string, task: Task) {
+        console.log(`[Scraper - ${this.name}] Fallback regex search on ${task.asin}`);
+        const $ = cheerio.load(html);
+        const regexes = [
+            /(?:EUR|€)\s*\d+[,.]\d+/i,
+            /\d+[,.]\d+\s*(?:EUR|€)/i,
+            /gratuita|gratis|senza costi aggiuntivi|inclusa/i
+        ];
+
+        let foundMatches = false;
+        let xmlOutput = `<?xml version="1.0" encoding="UTF-8"?>\n<FallbackRegexResult asin="${task.asin}" market="${task.market}">\n`;
+
+        $('*').each((_, element) => {
+            // we only want leaf tags or tags with direct text
+            if (element.type === 'tag') {
+                const text = $(element).clone().children().remove().end().text().trim();
+                if (text) {
+                    for (const regex of regexes) {
+                        if (regex.test(text)) {
+                            console.log(`[Fallback Regex] Match found in tag <${element.name}>: ${text}`);
+                            // escape xml entities for text and attribute values
+                            const escapeXml = (unsafe: string) => {
+                                return unsafe.replace(/[<>&'"]/g, function (c) {
+                                    switch (c) {
+                                        case '<': return '&lt;';
+                                        case '>': return '&gt;';
+                                        case '&': return '&amp;';
+                                        case '\'': return '&apos;';
+                                        case '"': return '&quot;';
+                                        default: return c;
+                                    }
+                                });
+                            };
+                            xmlOutput += `  <Match tag="${escapeXml(element.name)}" text="${escapeXml(text)}" />\n`;
+                            foundMatches = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        xmlOutput += `</FallbackRegexResult>\n`;
+
+        if (foundMatches) {
+            try {
+                const dir = path.join(process.cwd(), 'debug');
+                if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+                const filePath = path.join(dir, `${task.asin}_${task.market}_fallback.xml`);
+                fs.writeFileSync(filePath, xmlOutput);
+                console.log(`[Scraper - ${this.name}] Saved fallback results to ${filePath}`);
+            } catch (err) {
+                console.error(`[Scraper - ${this.name}] Failed to save fallback XML:`, err);
+            }
+        }
+    }
+
     // =====================================================================
     // CORE DI ESTRAZIONE E GESTIONE DOM/AJAX
     // =====================================================================
@@ -207,10 +266,18 @@ export class CustomScraperWorker extends BaseWorker {
             // Unqualified BuyBox (Senza BuyBox principale ma ci sono offerte esterne)
             if ($('#unqualifiedBuyBox').length > 0 || $('.apex-core-price-identifier').length === 0) {
                 console.log(`[Scraper - ${this.name}] Nessuna BuyBox per ${task.asin}. Lancio richiesta AJAX AOD...`);
-                return await this.extractFromAodAjax(task);
+                const aodResult = await this.extractFromAodAjax(task);
+                if (aodResult.data?.price === null || aodResult.data?.price === undefined) {
+                    this.performFallbackRegexSearch(html, task);
+                }
+                return aodResult;
             }
 
-            return this.parseProductData($, task);
+            const parsedResult = this.parseProductData($, task);
+            if (parsedResult.data?.price === null || parsedResult.data?.price === undefined) {
+                this.performFallbackRegexSearch(html, task);
+            }
+            return parsedResult;
 
         } catch (error: any) {
             return { success: false, error: error.message, timestamp: new Date() };
@@ -319,7 +386,7 @@ export class CustomScraperWorker extends BaseWorker {
     // =====================================================================
     // RESILIENZA E MICRO-RETRY DI RETE
     // =====================================================================
-    private async fetchHtmlWithRetry(url: string, market: AmazonMarket, extraHeaders: Record<string, string> = {}): Promise<string> {
+    protected async fetchHtmlWithRetry(url: string, market: AmazonMarket, extraHeaders: Record<string, string> = {}): Promise<string> {
         const localeMap: Record<AmazonMarket, string[]> = {
             'amazon.it': ['it-IT', 'en-US'], 'amazon.fr': ['fr-FR', 'en-US'], 'amazon.de': ['de-DE', 'en-US'],
         };
