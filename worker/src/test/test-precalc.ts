@@ -44,10 +44,6 @@ async function runTest() {
     dispatcher.registerWorker(apiWorkerAll);
     dispatcher.registerWorker(scraperWorker);
 
-    // Call private method `simulateGlobalThroughput`
-    const maxCompleteProducts = (dispatcher as any).simulateGlobalThroughput();
-    console.log(`Max Complete Products Calculated: ${maxCompleteProducts}`);
-
     const rawProducts = await prisma.product.findMany({
         select: {
             id: true, asin: true, priorityCode: true, mustTomorrow: true, lastUpdated: true,
@@ -59,6 +55,10 @@ async function runTest() {
         id: p.id, asin: p.asin, priorityCode: p.priorityCode, mustTomorrow: p.mustTomorrow,
         lastUpdated: p.lastUpdated, isUserTracked: p._count.alerts > 0
     }));
+
+    // Call private method `simulateGlobalThroughput`
+    const maxCompleteProducts = (dispatcher as any).simulateGlobalThroughput(dispatcherProducts);
+    console.log(`Max Complete Products Calculated: ${maxCompleteProducts}`);
 
     const tasks = await dispatcher.planDailyTasks(dispatcherProducts, maxCompleteProducts * 3);
     console.log(`Total Tasks Planned: ${tasks.length}`);

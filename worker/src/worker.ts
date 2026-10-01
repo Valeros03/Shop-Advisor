@@ -222,45 +222,44 @@ export class SmartDispatcher {
         const sortedWorkers = [...this.workers].sort((a, b) => a.priorityCost - b.priorityCost);
         sortedWorkers.forEach(w => w.setupVirtualSimulation());
 
-        let maxCompleteProducts = 0;
+        let maxCycles = 0;
 
         while (true) {
-            let productFullyAllocated = true;
-            // Per tenere traccia se lo Scraper ha già pagato la "Macro-Pausa" per l'ASIN corrente
-            const workersUsedForThisAsin = new Set<BaseWorker>();
+            let cycleFullyAllocated = true;
+            const workersUsedForThisCycle = new Set<BaseWorker>();
 
             for (const market of this.MARKETS) {
                 let taskAllocated = false;
                 
                 for (const worker of sortedWorkers) {
                     if (worker.supportsMarket(market)) {
-                        const isFirstTaskForAsin = !workersUsedForThisAsin.has(worker);
+                        const isFirstTaskForCycle = !workersUsedForThisCycle.has(worker);
                         
                         // Scala la valuta virtuale (Gettoni per le API, Secondi esatti per lo Scraper)
-                        if (worker.consumeVirtualCurrency(isFirstTaskForAsin)) {
+                        if (worker.consumeVirtualCurrency(isFirstTaskForCycle)) {
                             taskAllocated = true;
-                            workersUsedForThisAsin.add(worker);
+                            workersUsedForThisCycle.add(worker);
                             break; 
                         }
                     }
                 }
                 
-                // Se c'è anche un solo mercato che nessuno ha le risorse per fare, il prodotto è zoppo.
+                // Se c'è anche un solo mercato che nessuno ha le risorse per fare, il ciclo fallisce
                 if (!taskAllocated) {
-                    productFullyAllocated = false;
+                    cycleFullyAllocated = false;
                     break;
                 }
             }
 
-            if (productFullyAllocated) {
-                maxCompleteProducts++;
+            if (cycleFullyAllocated) {
+                maxCycles++;
             } else {
                 break; // Il limite globale dell'ecosistema è stato raggiunto.
             }
         }
         
-        console.log(`[Dispatcher] 🎯 Capacità Massima calcolata: ${maxCompleteProducts} Prodotti Completi.`);
-        return maxCompleteProducts;
+        console.log(`[Dispatcher] 🎯 Capacità Massima calcolata: ${maxCycles} Cicli Completi.`);
+        return maxCycles;
     }
 
     private calculateUrgencyScore(product: DispatcherProductRecord): number {
@@ -365,7 +364,7 @@ export class SmartDispatcher {
         console.log("[Dispatcher] 🚀 Avvio pianificazione giornaliera...");
 
         const loadedWorkers = await (await import("./factory/WorkerFactory")).WorkerFactory.loadAllWorkers();
-        loadedWorkers.forEach(w => this.registerWorker(w));
+        loadedWorkers.forEach(w => { if (!this.workers.some(existing => existing.name === w.name)) { this.registerWorker(w); } });
 
         if (!(await this.healthCheck())) return;
 

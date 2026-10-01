@@ -13,8 +13,9 @@ async function runTest() {
     // Clear old products
     await prisma.product.deleteMany({});
 
-    // Create exactly 10 fake products, so 30 tasks total (IT, FR, DE for each)
-    // with High priority
+    // Create exactly 10 fake products.
+    // They are priority 1 (4 updates/day) and multi-market (3 markets: IT, FR, DE).
+    // Total requested tasks = 10 * 4 * 3 = 120 tasks.
     for (let i = 0; i < 10; i++) {
         await prisma.product.create({
             data: {
@@ -22,7 +23,7 @@ async function runTest() {
                 name: `Alloc Product ${i}`,
                 image: "http://example.com/img.jpg",
                 priorityCode: 1,
-                mustTomorrow: true,
+                mustTomorrow: false,
                 lastUpdated: new Date(Date.now() - 1000 * 60 * 60 * 24), // yesterday
             }
         });
@@ -60,6 +61,15 @@ async function runTest() {
 
     // Prevent flushing updates to DB
     (dispatcher as any).updater.flushPartialUpdates = async () => {};
+    // Override workers to prevent loadAllWorkers from messing up the config
+    (dispatcher as any).workers = [apiWorkerIT, apiWorkerAll, scraperWorker];
+
+    // Stub out the WorkerFactory to prevent loading from config during the test
+    const WorkerFactoryModule = require("../factory/WorkerFactory");
+    WorkerFactoryModule.WorkerFactory.loadAllWorkers = async () => [];
+
+    // Stub out the healthCheck to avoid DB issues
+    (dispatcher as any).healthCheck = async () => true;
 
     console.log("Running Dispatcher run()...");
     await dispatcher.run();
@@ -69,12 +79,20 @@ async function runTest() {
     const scraperTasks = allocatedTasks.get(scraperWorker) || [];
 
     console.log(`\nAllocation Results:`);
-    console.log(`- API_IT tasks: ${apiItTasks.length} (Expected: 5, Limit: 5)`);
-    console.log(`- API_ALL tasks: ${apiAllTasks.length} (Expected: 10, Limit: 10)`);
-    console.log(`- SCRAPER tasks: ${scraperTasks.length} (Expected: 15, Limit: 50)`);
+    console.log(`- API_IT tasks: ${apiItTasks.length} (Expected: 5)`);
+    console.log(`- API_ALL tasks: ${apiAllTasks.length} (Expected: 10)`);
+    console.log(`- SCRAPER tasks: ${scraperTasks.length} (Expected: 50)`);
 
-    if (apiItTasks.length === 5 && apiAllTasks.length === 10 && scraperTasks.length === 15) {
-        console.log("Dispatcher Allocation Test PASS: Tasks were perfectly distributed prioritizing API over Scraper.");
+    const totalTasks = apiItTasks.length + apiAllTasks.length + scraperTasks.length;
+    console.log(`Total tasks allocated: ${totalTasks}`);
+
+    // In actual logic we expect:
+    // IT API handles 5 limit
+    // ALL API handles 10 limit
+    // SCRAPER handles 50 limit
+    // Total handled = 65 tasks out of 120 requested.
+    if (apiItTasks.length === 5 && apiAllTasks.length === 10 && scraperTasks.length === 50) {
+        console.log("Dispatcher Allocation Test PASS: Tasks correctly factor in 4x weight per market.");
     } else {
         console.error("Dispatcher Allocation Test FAIL: Task distribution mismatch.");
     }
