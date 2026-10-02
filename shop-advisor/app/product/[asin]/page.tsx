@@ -1,75 +1,113 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useParams } from "next/navigation";
 import Image from "next/image";
 import Link from "next/link";
 import { 
   ChevronLeft, Bell, AlertTriangle, ExternalLink, Info, 
-  TrendingDown, TrendingUp, CheckCircle2 
+  TrendingDown, TrendingUp, CheckCircle2, Loader2
 } from "lucide-react";
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend 
 } from "recharts";
 
-// --- MOCK DATA ---
-const productMock = {
-  name: "Sony WH-1000XM5 Cuffie Wireless con Noise Cancelling",
-  asin: "B09Y2NDXGQ",
-  image: "https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?w=500&q=80",
-};
-
-// I prezzi finti per il grafico (Ultimi 12 mesi)
-// Tutti i prezzi qui sono già "Finali" (IVA normalizzata + Spedizione)
-const chartData = [
-  { month: "Gen", IT: 315, FR: 320, DE: 310 },
-  { month: "Feb", IT: 310, FR: 315, DE: 305 },
-  { month: "Mar", IT: 299, FR: 315, DE: 295 },
-  { month: "Apr", IT: 305, FR: 299, DE: 300 },
-  { month: "Mag", IT: 289, FR: 295, DE: 290 },
-  { month: "Giu", IT: 299, FR: 289, DE: 285 },
-  { month: "Lug", IT: 279, FR: 285, DE: 280 }, // Prime Day mock
-  { month: "Ago", IT: 295, FR: 299, DE: 295 },
-  { month: "Set", IT: 289, FR: 295, DE: 290 },
-  { month: "Ott", IT: 299, FR: 305, DE: 299 },
-  { month: "Nov", IT: 269, FR: 275, DE: 270 }, // Black Friday mock
-  { month: "Dic", IT: 299, FR: 299, DE: 295 },
-];
-
-const marketsStats = [
-  { 
-    code: "IT", name: "Italia", flag: "🇮🇹", color: "#2b8a3e",
-    current: 299.00, min: 269.00, max: 315.00, avg: 295.50, shipping: 0.00,
-    url: "https://amazon.it/dp/B09Y2NDXGQ"
-  },
-  { 
-    code: "FR", name: "Francia", flag: "🇫🇷", color: "#3b82f6",
-    current: 299.00, min: 275.00, max: 320.00, avg: 300.20, shipping: 6.99,
-    url: "https://amazon.fr/dp/B09Y2NDXGQ"
-  },
-  { 
-    code: "DE", name: "Germania", flag: "🇩🇪", color: "#f59e0b",
-    current: 295.00, min: 270.00, max: 310.00, avg: 292.80, shipping: 5.99,
-    url: "https://amazon.de/dp/B09Y2NDXGQ"
-  }
-];
-
 export default function ProductPage() {
-  // Troviamo il minimo storico assoluto tra tutti i mercati per la validazione
-  const absoluteMin = Math.min(...marketsStats.map(m => m.min));
-  const recommendedPrice = absoluteMin + 5; // Consigliamo di puntare quasi al minimo storico
+  const params = useParams();
+  const asin = params?.asin as string;
 
-  const [alertPrice, setAlertPrice] = useState<string>(recommendedPrice.toString());
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [productData, setProductData] = useState<any>(null);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const [alertPrice, setAlertPrice] = useState<string>("");
   const [isSaved, setIsSaved] = useState<boolean>(false);
+  const [isSaving, setIsSaving] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (!asin) return;
+
+    const fetchProduct = async () => {
+      try {
+        const res = await fetch(`/api/products/${asin}`);
+        if (!res.ok) {
+          throw new Error("Product not found");
+        }
+        const data = await res.json();
+        setProductData(data);
+        setAlertPrice(data.recommendedPrice.toString());
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } catch (err: any) {
+        setError(err.message);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    fetchProduct();
+  }, [asin]);
 
   const parsedAlertPrice = parseFloat(alertPrice) || 0;
-  // Logica per il banner: se l'utente mette un prezzo inferiore del 5% rispetto al minimo storico di sempre
-  const isPriceTooLow = parsedAlertPrice > 0 && parsedAlertPrice < (absoluteMin * 0.95);
+  const isPriceTooLow = productData && parsedAlertPrice > 0 && parsedAlertPrice < (productData.absoluteMin * 0.95);
 
-  const handleSaveAlert = () => {
-    console.log("Alert salvato per:", parsedAlertPrice);
-    setIsSaved(true);
-    // TODO: Invia API per salvare su DB
+  const handleSaveAlert = async () => {
+    if (!asin || parsedAlertPrice <= 0) return;
+
+    setIsSaving(true);
+    try {
+      const res = await fetch('/api/alerts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          asin,
+          targetPrice: parsedAlertPrice,
+        }),
+      });
+
+      if (res.ok) {
+        setIsSaved(true);
+      } else {
+        const data = await res.json();
+        if (data.error === 'Unauthorized') {
+          alert('Devi effettuare il login con Telegram prima di poter salvare un alert.');
+        } else {
+          alert(`Errore: ${data.error}`);
+        }
+      }
+    } catch (err) {
+      console.error("Failed to save alert:", err);
+      alert('Si è verificato un errore durante il salvataggio dell\'alert.');
+    } finally {
+      setIsSaving(false);
+    }
   };
+
+  if (isLoading) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[50vh]">
+        <Loader2 className="w-12 h-12 text-[#2b8a3e] animate-spin mb-4" />
+        <p className="text-gray-400">Caricamento dettagli prodotto...</p>
+      </div>
+    );
+  }
+
+  if (error || !productData) {
+    return (
+      <div className="max-w-7xl mx-auto px-4 py-20 text-center">
+        <AlertTriangle className="w-16 h-16 text-red-500 mx-auto mb-4" />
+        <h2 className="text-2xl font-bold text-white mb-2">Prodotto non trovato</h2>
+        <p className="text-gray-400 mb-8">Non siamo riusciti a trovare il prodotto con ASIN {asin}.</p>
+        <Link href="/" className="inline-flex items-center gap-2 bg-[#2b8a3e] text-white px-6 py-3 rounded-full font-bold hover:bg-[#227031] transition-colors">
+          <ChevronLeft size={20} /> Torna alla ricerca
+        </Link>
+      </div>
+    );
+  }
+
+  const { product: productMock, marketsStats, chartData, absoluteMin } = productData;
 
   return (
     <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -95,7 +133,7 @@ export default function ProductPage() {
           <div className="flex items-start gap-2 bg-blue-900/20 border border-blue-900/50 p-3 rounded-xl inline-flex text-blue-200 text-sm max-w-2xl">
             <Info className="w-5 h-5 flex-shrink-0 mt-0.5 text-blue-400" />
             <p>
-              I prezzi mostrati su questa pagina sono <strong>Finali</strong>. Includono già l'adeguamento IVA per l'Italia e i costi di spedizione stimati. Il prezzo che vedi è quello che pagherai al checkout.
+              I prezzi mostrati su questa pagina sono <strong>Finali</strong>. Includono già l&apos;adeguamento IVA per l&apos;Italia e i costi di spedizione stimati. Il prezzo che vedi è quello che pagherai al checkout.
             </p>
           </div>
         </div>
@@ -162,7 +200,7 @@ export default function ProductPage() {
               <div className="bg-orange-500/10 border border-orange-500/30 p-3 rounded-lg flex items-start gap-3 mb-4 animate-in fade-in">
                 <AlertTriangle className="text-orange-500 w-5 h-5 flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-orange-200 leading-tight">
-                  Questo prezzo è inferiore al minimo storico dell'ultimo anno ({absoluteMin}€). Potrebbe non essere mai raggiunto.
+                  Questo prezzo è inferiore al minimo storico dell&apos;ultimo anno ({absoluteMin.toFixed(2)}€). Potrebbe non essere mai raggiunto.
                 </p>
               </div>
             )}
@@ -170,14 +208,14 @@ export default function ProductPage() {
 
           <button 
             onClick={handleSaveAlert}
-            disabled={isSaved}
+            disabled={isSaved || isSaving}
             className={`w-full py-4 rounded-xl font-bold text-lg flex justify-center items-center gap-2 transition-all shadow-lg ${
               isSaved 
               ? "bg-gray-700 text-gray-300 cursor-not-allowed" 
               : "bg-[#2b8a3e] hover:bg-[#227031] text-white hover:shadow-green-900/20"
-            }`}
+            } ${isSaving ? 'opacity-70 cursor-wait' : ''}`}
           >
-            {isSaved ? <><CheckCircle2 /> Alert Attivo</> : "Attiva Alert"}
+            {isSaving ? <><Loader2 className="animate-spin" /> Salvataggio...</> : isSaved ? <><CheckCircle2 /> Alert Attivo</> : "Attiva Alert"}
           </button>
         </div>
       </div>
@@ -185,7 +223,8 @@ export default function ProductPage() {
       {/* STATISTICHE MERCATI E BOTTONI AMAZON */}
       <h3 className="text-xl font-bold text-white mb-4">Dettagli per Mercato</h3>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {marketsStats.map((market) => (
+        {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+        {marketsStats.map((market: any) => (
           <div key={market.code} className="bg-white rounded-3xl p-6 flex flex-col shadow-sm border border-gray-100 relative overflow-hidden">
             
             {/* Riga Colorata in cima alla card */}
@@ -197,7 +236,7 @@ export default function ProductPage() {
               </div>
               <div className="text-right">
                 <div className="text-[10px] uppercase font-bold text-gray-400">Prezzo Attuale</div>
-                <div className="text-2xl font-black text-gray-900">{market.current.toFixed(2)}€</div>
+                <div className="text-2xl font-black text-gray-900">{market.current ? `${market.current.toFixed(2)}€` : 'N/A'}</div>
               </div>
             </div>
 
@@ -205,17 +244,17 @@ export default function ProductPage() {
               <div className="text-center">
                 <div className="text-xs text-gray-500 mb-1">Minimo</div>
                 <div className="font-bold text-gray-800 flex justify-center items-center gap-1">
-                  <TrendingDown size={14} className="text-green-600" /> {market.min.toFixed(2)}€
+                  <TrendingDown size={14} className="text-green-600" /> {market.min ? `${market.min.toFixed(2)}€` : 'N/A'}
                 </div>
               </div>
               <div className="text-center border-l border-r border-gray-200">
                 <div className="text-xs text-gray-500 mb-1">Medio</div>
-                <div className="font-bold text-gray-800">{market.avg.toFixed(2)}€</div>
+                <div className="font-bold text-gray-800">{market.avg ? `${market.avg.toFixed(2)}€` : 'N/A'}</div>
               </div>
               <div className="text-center">
                 <div className="text-xs text-gray-500 mb-1">Massimo</div>
                 <div className="font-bold text-gray-800 flex justify-center items-center gap-1">
-                  <TrendingUp size={14} className="text-red-500" /> {market.max.toFixed(2)}€
+                  <TrendingUp size={14} className="text-red-500" /> {market.max ? `${market.max.toFixed(2)}€` : 'N/A'}
                 </div>
               </div>
             </div>
@@ -223,7 +262,7 @@ export default function ProductPage() {
             <div className="flex justify-between items-center text-sm mb-6 pb-4 border-b border-gray-100">
               <span className="text-gray-500">Costo spedizione calcolato:</span>
               <span className="font-mono font-semibold text-gray-700">
-                {market.shipping === 0 ? "Gratuita" : `+${market.shipping.toFixed(2)}€`}
+                {market.shipping === 0 ? "Gratuita" : market.shipping ? `+${market.shipping.toFixed(2)}€` : 'N/A'}
               </span>
             </div>
 
