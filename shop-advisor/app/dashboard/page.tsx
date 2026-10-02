@@ -1,13 +1,13 @@
 // app/page.tsx
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Image from "next/image";
-import { Search, TrendingUp, BellRing, LineChart, Info, ExternalLink, ChevronLeft } from "lucide-react";
+import { Search, TrendingUp, BellRing, LineChart, Info, ExternalLink, ChevronLeft, Loader2 } from "lucide-react";
 import Link from "next/link"; 
 
 interface Product {
-  id: number;
+  id: string;
   name: string;
   asin: string;
   saves: number;
@@ -20,77 +20,47 @@ interface Product {
 export default function DashboardPage() {
   const [searchQuery, setSearchQuery] = useState<string>("");
   const [hasSearched, setHasSearched] = useState<boolean>(false); 
+  const [topProducts, setTopProducts] = useState<Product[]>([]);
+  const [searchResults, setSearchResults] = useState<Product[]>([]);
+  const [isLoadingTop, setIsLoadingTop] = useState<boolean>(true);
+  const [isLoadingSearch, setIsLoadingSearch] = useState<boolean>(false);
 
-  const topSavedProducts: Product[] = [
-    {
-      id: 1,
-      name: "Sony WH-1000XM5 Cuffie Wireless con Noise Cancelling",
-      asin: "B09Y2NDXGQ",
-      saves: 142,
-      price: "299.00€",
-      image: "https://images.unsplash.com/photo-1618366712010-f4ae9c647dcb?w=500&q=80",
-      market: "IT",
-      amazonUrl: "https://amazon.it/dp/B09Y2NDXGQ"
-    },
-    {
-      id: 2,
-      name: "Kindle Paperwhite (16 GB) - Schermo da 6,8''",
-      asin: "B08N40LTND",
-      saves: 85,
-      price: "169.99€",
-      image: "https://images.unsplash.com/photo-1592496001020-d31bd830651f?w=500&q=80",
-      market: "FR",
-      amazonUrl: "https://amazon.fr/dp/B08N40LTND"
-    },
-    {
-      id: 3,
-      name: "Tastiera Meccanica Custom Keychron V1",
-      asin: "B0B2DM6X3Y",
-      saves: 0, 
-      price: "119.00€",
-      image: "https://images.unsplash.com/photo-1595225476474-87563907a212?w=500&q=80",
-      market: "DE",
-      amazonUrl: "https://amazon.de/dp/B0B2DM6X3Y"
-    }
-  ];
+  useEffect(() => {
+    const fetchTopProducts = async () => {
+      try {
+        const res = await fetch('/api/products/top');
+        if (res.ok) {
+          const data = await res.json();
+          setTopProducts(data);
+        }
+      } catch (error) {
+        console.error("Failed to fetch top products:", error);
+      } finally {
+        setIsLoadingTop(false);
+      }
+    };
 
-  const mockSearchResults: Product[] = [
-    {
-      id: 101,
-      name: "Apple MacBook Air (M1, 2020) - Grigio Siderale",
-      asin: "B08N5XHLWV",
-      saves: 45,
-      price: "899.00€",
-      image: "https://images.unsplash.com/photo-1611186871348-b1ce696e52c9?w=500&q=80",
-      market: "DE",
-      amazonUrl: "https://amazon.de/dp/B08N5XHLWV"
-    },
-    {
-      id: 102,
-      name: "Apple AirPods Pro (2ª generazione)",
-      asin: "B0BDJ67876",
-      saves: 230,
-      price: "239.99€",
-      image: "https://images.unsplash.com/photo-1600294037681-c80b4cb5b434?w=500&q=80",
-      market: "FR",
-      amazonUrl: "https://amazon.fr/dp/B0BDJ67876"
-    },
-    {
-      id: 103,
-      name: "Apple Watch Series 9 (GPS, 41mm)",
-      asin: "B0CHX51DRR",
-      saves: 88,
-      price: "399.00€",
-      image: "https://images.unsplash.com/photo-1434493789847-2f02b001a153?w=500&q=80",
-      market: "IT",
-      amazonUrl: "https://amazon.it/dp/B0CHX51DRR"
-    }
-  ];
+    fetchTopProducts();
+  }, []);
 
-  const handleSearch = (e: React.FormEvent<HTMLFormElement>): void => {
+  const handleSearch = async (e: React.FormEvent<HTMLFormElement>): Promise<void> => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
+
     setHasSearched(true);
+    setIsLoadingSearch(true);
+
+    try {
+      const res = await fetch(`/api/products/search?q=${encodeURIComponent(searchQuery)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSearchResults(data);
+      }
+    } catch (error) {
+      console.error("Failed to search products:", error);
+    } finally {
+      setIsLoadingSearch(false);
+    }
   };
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -116,7 +86,7 @@ export default function DashboardPage() {
           Traccia, confronta e <span className="text-[#2b8a3e]">risparmia.</span>
         </h1>
         <p className="text-gray-300 max-w-2xl mx-auto text-lg">
-          Monitora l'andamento dei prezzi su Amazon IT, FR e DE. Imposta la tua soglia e ricevi alert su Telegram quando è il momento perfetto per acquistare.
+          Monitora l&apos;andamento dei prezzi su Amazon IT, FR e DE. Imposta la tua soglia e ricevi alert su Telegram quando è il momento perfetto per acquistare.
         </p>
       </div>
 
@@ -151,8 +121,15 @@ export default function DashboardPage() {
             <h2 className="text-2xl font-bold text-white">I più seguiti dalla community</h2>
           </div>
           
+          {isLoadingTop ? (
+            <div className="flex justify-center items-center py-20">
+              <Loader2 className="w-10 h-10 text-[#2b8a3e] animate-spin" />
+            </div>
+          ) : topProducts.length === 0 ? (
+            <div className="text-center py-10 text-gray-400">Nessun prodotto trovato.</div>
+          ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
-            {topSavedProducts.map((product) => (
+            {topProducts.map((product) => (
               <div 
                 key={product.id} 
                 className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group flex flex-col"
@@ -194,14 +171,15 @@ export default function DashboardPage() {
                     </div>
                     <span className="text-2xl font-black text-gray-900">{product.price}</span>
                   </div>
-                  <button className="flex items-center gap-2 text-[#2b8a3e] bg-[#2b8a3e]/10 hover:bg-[#2b8a3e] hover:text-white px-4 py-2.5 rounded-xl transition-all text-sm font-bold">
+                  <Link href={`/product/${product.asin}`} className="flex items-center gap-2 text-[#2b8a3e] bg-[#2b8a3e]/10 hover:bg-[#2b8a3e] hover:text-white px-4 py-2.5 rounded-xl transition-all text-sm font-bold">
                     <LineChart size={18} />
                     Storico
-                  </button>
+                  </Link>
                 </div>
               </div>
             ))}
           </div>
+          )}
         </div>
       ) : (
         /* VISTA RICERCA: Risultati */
@@ -209,8 +187,8 @@ export default function DashboardPage() {
           
           <div className="flex items-center justify-between mb-8">
             <div>
-              <h2 className="text-2xl font-bold text-white">Risultati per "{searchQuery}"</h2>
-              <p className="text-gray-400 text-sm mt-1">Trovati {mockSearchResults.length} prodotti</p>
+              <h2 className="text-2xl font-bold text-white">Risultati per &quot;{searchQuery}&quot;</h2>
+              {!isLoadingSearch && <p className="text-gray-400 text-sm mt-1">Trovati {searchResults.length} prodotti</p>}
             </div>
             <button 
               onClick={clearSearch}
@@ -220,8 +198,15 @@ export default function DashboardPage() {
             </button>
           </div>
 
+          {isLoadingSearch ? (
+            <div className="flex justify-center items-center py-20">
+              <Loader2 className="w-10 h-10 text-[#2b8a3e] animate-spin" />
+            </div>
+          ) : searchResults.length === 0 ? (
+            <div className="text-center py-10 text-gray-400">Nessun prodotto trovato.</div>
+          ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-            {mockSearchResults.map((product) => (
+            {searchResults.map((product) => (
               <div 
                 key={product.id} 
                 className="bg-white rounded-3xl p-5 shadow-sm border border-gray-100 hover:shadow-xl transition-all duration-300 group flex flex-col relative"
@@ -260,6 +245,7 @@ export default function DashboardPage() {
                     </span>
                   </div>
 
+                  {product.amazonUrl ? (
                   <a 
                     href={product.amazonUrl} 
                     target="_blank" 
@@ -269,11 +255,17 @@ export default function DashboardPage() {
                     <ExternalLink size={16} />
                     Apri su Amazon
                   </a>
+                  ) : (
+                    <div className="w-full flex justify-center items-center gap-2 bg-gray-100 text-gray-400 px-4 py-2.5 rounded-xl font-bold text-sm">
+                      Non disponibile
+                    </div>
+                  )}
                 </div>
 
               </div>
             ))}
           </div>
+          )}
 
         </div>
       )}
@@ -282,7 +274,7 @@ export default function DashboardPage() {
       <div className="mt-8 bg-gray-800/60 border-l-4 border-[#2b8a3e] p-4 rounded-r-lg flex items-start gap-3 shadow-sm">
         <Info className="w-5 h-5 text-[#2b8a3e] flex-shrink-0 mt-0.5" />
         <p className="text-sm text-gray-300 leading-relaxed">
-          I prezzi calcolati sono il prezzo finale che vedrai all'acquisto di quel prodotto, comprendono IVA e spedizione, anche cross-market. <strong className="text-white font-semibold">TUTTAVIA</strong> il prezzo finale può variare se quel prodotto cambia prezzo nell'arco della giornata più volte.
+          I prezzi calcolati sono il prezzo finale che vedrai all&apos;acquisto di quel prodotto, comprendono IVA e spedizione, anche cross-market. <strong className="text-white font-semibold">TUTTAVIA</strong> il prezzo finale può variare se quel prodotto cambia prezzo nell&apos;arco della giornata più volte.
         </p>
       </div>
 
