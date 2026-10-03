@@ -1,7 +1,7 @@
 {
   "name": "CustomScraper",
   "limits": {
-    "dailyLimit": 1000,
+    "dailyLimit": 150,
     "monthlyLimit": -1,
     "lifetimeLimit": -1,
     "rateLimitTps": null

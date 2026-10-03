@@ -1,16 +1,29 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { PrismaClient } from '@prisma/client';
 import { BaseWorker, ApiWorker } from '../worker';
 import { CustomScraperWorker } from '../scraper/scraper';
 import { AdapterRegistry } from '../api/AdapterRegistry';
 
+const prisma = new PrismaClient();
+
 export class WorkerFactory {
     
-    // Funzione simulata che andrà a leggere dal DB gli utilizzi attuali dei worker
+    // Legge l'utilizzo reale persistito nel database
     private static async getUsageFromDB(workerName: string) {
-        // Simulazione: ritorna sempre 0. 
-        // Nella realtà: await prisma.workerStat.findUnique({ where: { name: workerName } })
-        return { daily: 0, monthly: 0, lifetime: 0 };
+        try {
+            const stat = await prisma.workerStat.findUnique({
+                where: { name: workerName }
+            });
+            if (!stat) return { daily: 0, monthly: 0, lifetime: 0 };
+            return {
+                daily: stat.dailyUsage,
+                monthly: stat.monthlyUsage,
+                lifetime: stat.lifetimeUsage
+            };
+        } catch {
+            return { daily: 0, monthly: 0, lifetime: 0 };
+        }
     }
 
     public static async loadAllWorkers(): Promise<BaseWorker[]> {
@@ -25,17 +38,16 @@ export class WorkerFactory {
                 const configPath = path.join(apiConfigDir, file);
                 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-                // Ottiene la chiave API dall'ambiente (es. process.env.SERPAPI_KEY)
-                const apiKey = process.env[config.env_key];
-                if (!apiKey) {
-                    console.warn(`[Factory] Salto ${config.name}: Chiave API ${config.env_key} non trovata nell'ambiente.`);
+                // Legge la chiave: prima da api_key diretta, poi da process.env[env_key]
+                const apiKey = config.api_key || (config.env_key ? process.env[config.env_key] : undefined);
+                if (!apiKey || apiKey === "LA_TUA_CHIAVE_QUI") {
+                    console.warn(`[Factory] Salto ${config.name}: Chiave API non valida o placeholder presente.`);
                     continue;
                 }
 
-                // Trova l'adapter corretto dal registro
                 const AdapterClass = AdapterRegistry[config.adapter];
                 if (!AdapterClass) {
-                    console.error(`[Factory] Adapter ${config.adapter} non trovato nel registro!`);
+                    console.error(`[Factory] Adapter "${config.adapter}" non trovato nel registro per ${config.name}!`);
                     continue;
                 }
 

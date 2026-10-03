@@ -12,6 +12,8 @@ export interface Task {
     asin: string;
     market: AmazonMarket;
     isMustTomorrow: boolean;
+    cycleIndex: number;         // 0 per il 1° update, 1 per il 2°, ecc.
+    targetSlotTime?: number;    // Timestamp indicativo calcolato dal Dispatcher
 }
 
 export interface NormalizedProduct {

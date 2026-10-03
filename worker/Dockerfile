@@ -12,4 +12,4 @@ RUN npx prisma generate --schema=./prisma/schema.prisma
 COPY worker/tsconfig.json ./
 COPY worker/src ./src
 
-CMD ["npm", "run", "worker"]
+CMD ["npm", "run", "index"]

@@ -1,9 +1,10 @@
 {
   "name": "SerpApi",
   "api_key": "LA_TUA_CHIAVE_QUI",
+  "adapter": "serpapi",
   "limits": {
     "dailyLimit": 3,
-    "monthlyLimit": 100,
+    "monthlyLimit": 250,
     "lifetimeLimit": -1,
     "rateLimitTps": 2
   },

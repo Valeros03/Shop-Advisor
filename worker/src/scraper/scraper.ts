@@ -23,6 +23,7 @@ interface ScheduledCluster {
 export class CustomScraperWorker extends BaseWorker {
     public readonly priorityCost = 99; // Costo alto: ultima spiaggia per il Dispatcher
     private virtualSeconds: number = 0;
+    private virtualDailyUsage: number = 0;
     
     private cookieJar: CookieJar;
     private longPausesDone: number = 0;
@@ -53,26 +54,31 @@ export class CustomScraperWorker extends BaseWorker {
 
     public setupVirtualSimulation(): void {
         this.virtualSeconds = this.getRawCurrency();
+        this.virtualDailyUsage = this.currentDailyUsage; // <-- AGGIUNTO: reset al valore iniziale
     }
 
     public consumeVirtualCurrency(isFirstTaskForAsin: boolean): boolean {
-        // Valori medi esatti basati sui limiti randomici imposti
-        const MACRO_PAUSE_AVG = 82.5;  // (45 + 120) / 2
-        const MICRO_PAUSE_AVG = 8.25;  // (1.5 + 15) / 2
-        const NETWORK_FETCH_AVG = 7.0; // Stima tempo di rete
+        // Se è impostato un tetto numerico giornaliero e lo abbiamo raggiunto, rifiuta il task
+        if (this.limits.dailyLimit !== -1 && this.virtualDailyUsage >= this.limits.dailyLimit) {
+            return false;
+        }
+
+        const MACRO_PAUSE_AVG = 82.5;
+        const MICRO_PAUSE_AVG = 8.25;
+        const NETWORK_FETCH_AVG = 7.0;
         
         let costSeconds = 0;
 
         if (isFirstTaskForAsin) {
-            // È il primo mercato per questo ASIN: costa la Macro-Pausa + Rete
-            costSeconds = MACRO_PAUSE_AVG + NETWORK_FETCH_AVG; // ~89.5s
+            costSeconds = MACRO_PAUSE_AVG + NETWORK_FETCH_AVG;
         } else {
-            // Mercati successivi dello stesso ASIN: costa solo la Micro-Pausa (Cambio Tab) + Rete
-            costSeconds = MICRO_PAUSE_AVG + NETWORK_FETCH_AVG; // ~15.25s
+            costSeconds = MICRO_PAUSE_AVG + NETWORK_FETCH_AVG;
         }
 
+        // Verifica la disponibilità sia temporale (secondi) sia di gettoni
         if (this.virtualSeconds >= costSeconds) {
             this.virtualSeconds -= costSeconds;
+            this.virtualDailyUsage++; // <-- AGGIUNTO: scala il gettone virtuale
             return true;
         }
         return false;
@@ -81,44 +87,51 @@ export class CustomScraperWorker extends BaseWorker {
     // =====================================================================
     // LIVELLO 3.A: DELEGAZIONE E TIME-BUCKETING
     // =====================================================================
-    public delegateAndOrganizeTasks(rawTasks: Task[]): void {
-        console.log(`[Scraper - ${this.name}] Ricompattazione dei ${rawTasks.length} task frammentati...`);
-        
-        const clustersByAsin = new Map<string, PartialCluster[]>();
+    public delegateAndOrganizeTasks(tasks: Task[]): void {
+        console.log(`[Scraper - ${this.name}] 🗓️ Organizzazione di ${tasks.length} task in cluster coerenti...`);
 
-        for (const task of rawTasks) {
-            if (!clustersByAsin.has(task.asin)) clustersByAsin.set(task.asin, []);
-            const asinClusters = clustersByAsin.get(task.asin)!;
+        // 1. Raggruppa i task per ciclo dello stesso ASIN (es. ASIN_0_cycle_0, ASIN_0_cycle_1)
+        // In questo modo i 3 mercati dello stesso ciclo rimangono uniti nello STESSO cluster
+        const clusterMap = new Map<string, Task[]>();
 
-            let targetCluster = asinClusters.find(c => !c.tasks.some(t => t.market === task.market));
-
-            if (!targetCluster) {
-                targetCluster = { asin: task.asin, tasks: [] };
-                asinClusters.push(targetCluster);
+        for (const task of tasks) {
+            const key = `${task.asin}_cycle_${task.cycleIndex ?? 0}`;
+            if (!clusterMap.has(key)) {
+                clusterMap.set(key, []);
             }
-            targetCluster.tasks.push(task);
+            clusterMap.get(key)!.push(task);
         }
 
         const now = Date.now();
         const midnight = new Date();
         midnight.setHours(23, 59, 59, 999);
-        const totalWindowMs = midnight.getTime() - now;
+        const endOfDay = midnight.getTime();
 
         this.timelineQueue = [];
 
-        for (const [asin, clusters] of clustersByAsin.entries()) {
-            const bucketSizeMs = totalWindowMs / clusters.length;
+        // 2. Crea i cluster basandosi sui targetSlotTime forniti dal Dispatcher
+        for (const [_, clusterTasks] of clusterMap.entries()) {
+            // Se il task non ha targetSlotTime (es. nei vecchi test), usa now come fallback
+            const baseTime = clusterTasks[0].targetSlotTime ?? now;
+            
+            // Jitter circoscritto (±45s) per naturalezza anti-bot senza alterare l'ondatata oraria
+            const jitter = (Math.random() * 90000) - 45000;
+            const targetTime = Math.min(Math.max(baseTime + jitter, now), endOfDay - 2000);
 
-            clusters.forEach((cluster, index) => {
-                // Jitter randomico (es. 40%) per variare l'orario di target ed evitare ritmi artificiali
-                const jitter = Math.random() * (bucketSizeMs * 0.4);
-                const targetTime = now + (index * bucketSizeMs) + jitter;
-                this.timelineQueue.push({ targetTime, cluster });
+            this.timelineQueue.push({
+                targetTime,
+                cluster: {
+                    asin: clusterTasks[0].asin,
+                    tasks: clusterTasks,
+                    isMustTomorrow: clusterTasks.some(t => t.isMustTomorrow)
+                }
             });
         }
 
-        // Mette in fila cronologica tutti gli ASIN da scansionare
+        // 3. Ordina cronologicamente per orario di esecuzione
         this.timelineQueue.sort((a, b) => a.targetTime - b.targetTime);
+
+        console.log(`[Scraper - ${this.name}] ✅ Generati ${this.timelineQueue.length} cluster esecutivi sincronizzati con il Dispatcher.`);
     }
 
     // =====================================================================
@@ -184,60 +197,128 @@ export class CustomScraperWorker extends BaseWorker {
         }
     }
 
-    private performFallbackRegexSearch(html: string, task: Task) {
-        console.log(`[Scraper - ${this.name}] Fallback regex search on ${task.asin}`);
+    public performFallbackRegexSearch(html: string, task: Task) {
+        console.log(`[Scraper - ${this.name}] 🔍 Avvio Fallback Regex su ${task.asin} (${task.market})...`);
         const $ = cheerio.load(html);
-        const regexes = [
-            /(?:EUR|€)\s*\d+[,.]\d+/i,
-            /\d+[,.]\d+\s*(?:EUR|€)/i,
-            /gratuita|gratis|senza costi aggiuntivi|inclusa/i
+
+        // Regex per PREZZI: supporta formati europei (es. 699,00€, EUR 699.00, € 771,90)
+        const priceRegexes = [
+            /(?:EUR|€)\s*\d+([.,]\d{2})?/i,
+            /\d+([.,]\d{2})?\s*(?:EUR|€)/i,
+            /\b\d{2,4}[.,]\d{2}\s*€/i
         ];
 
-        let foundMatches = false;
-        let xmlOutput = `<?xml version="1.0" encoding="UTF-8"?>\n<FallbackRegexResult asin="${task.asin}" market="${task.market}">\n`;
+        // Regex per SPEDIZIONE: include tedesco (Lieferung/Versand), italiano, francese e inglese
+        const shippingRegexes = [
+            /spedizione\s+gratuita|consegna\s+gratuita|senza\s+costi\s+aggiuntivi/i,
+            /livraison\s+gratuite|envoi\s+gratuit/i,
+            /kostenlose\s+lieferung|kostenloser\s+versand|gratis\s+versand/i,
+            /free\s+delivery|free\s+shipping/i,
+            /(?:lieferung|versand|spedizione|consegna|delivery|shipping)\s*(?:für|for|de)?\s*(?:EUR|€)?\s*\d+[.,]\d{2}/i,
+            /\d+[.,]\d{2}\s*(?:EUR|€)?\s*(?:versand|delivery|shipping|di\s+spedizione)/i
+        ];
 
-        $('*').each((_, element) => {
-            // we only want leaf tags or tags with direct text
-            if (element.type === 'tag') {
-                const text = $(element).clone().children().remove().end().text().trim();
-                if (text) {
-                    for (const regex of regexes) {
-                        if (regex.test(text)) {
-                            console.log(`[Fallback Regex] Match found in tag <${element.name}>: ${text}`);
-                            // escape xml entities for text and attribute values
-                            const escapeXml = (unsafe: string) => {
-                                return unsafe.replace(/[<>&'"]/g, function (c) {
-                                    switch (c) {
-                                        case '<': return '&lt;';
-                                        case '>': return '&gt;';
-                                        case '&': return '&amp;';
-                                        case '\'': return '&apos;';
-                                        case '"': return '&quot;';
-                                        default: return c;
-                                    }
-                                });
-                            };
-                            xmlOutput += `  <Match tag="${escapeXml(element.name)}" text="${escapeXml(text)}" />\n`;
-                            foundMatches = true;
-                            break;
-                        }
-                    }
+        interface TagMatch {
+            type: "PRICE" | "SHIPPING";
+            tag: string;
+            id?: string;
+            className?: string;
+            text: string;
+        }
+
+        const matches: TagMatch[] = [];
+
+        // Scansiona i tag informativi foglia o semi-foglia (span, div, b, strong, p, td, a)
+        $('span, div, b, strong, p, td, a').not('script, style, noscript, svg').each((_, element) => {
+            const $el =$(element);
+            
+            // Se l'elemento ha più di 2 figli tag, è un contenitore strutturale: saltalo
+            if ($el.children().length > 2) return;
+
+            // Prendi il testo normalizzato (sostituisce whitespace multipli con singolo spazio)
+            const text = $el.text().replace(/\s+/g, ' ').trim();
+            if (!text || text.length > 80) return; // Salta testi troppo lunghi
+
+            // Controllo PREZZO
+            for (const regex of priceRegexes) {
+                if (regex.test(text)) {
+                    matches.push({
+                        type: "PRICE",
+                        tag: element.name,
+                        id: $el.attr('id') || undefined,
+                        className: $el.attr('class') || undefined,
+                        text
+                    });
+                    console.log(`[Fallback Regex][PRICE] <${element.name} class="${$el.attr('class') || ''}"> -> ${text}`);
+                    break;
+                }
+            }
+
+            // Controllo SPEDIZIONE
+            for (const regex of shippingRegexes) {
+                if (regex.test(text)) {
+                    matches.push({
+                        type: "SHIPPING",
+                        tag: element.name,
+                        id: $el.attr('id') || undefined,
+                        className: $el.attr('class') || undefined,
+                        text
+                    });
+                    console.log(`[Fallback Regex][SHIPPING] <${element.name} class="${$el.attr('class') || ''}"> -> ${text}`);
+                    break;
                 }
             }
         });
 
-        xmlOutput += `</FallbackRegexResult>\n`;
+        // Rimozione duplicati (stesso testo e stessa classe)
+        const uniqueMatches = matches.filter((match, index, self) =>
+            index === self.findIndex((m) => m.text === match.text && m.className === match.className)
+        );
 
-        if (foundMatches) {
+        if (uniqueMatches.length > 0) {
+            const escapeXml = (unsafe: string) => unsafe.replace(/[<>&'"]/g, (c) => {
+                switch (c) {
+                    case '<': return '&lt;';
+                    case '>': return '&gt;';
+                    case '&': return '&amp;';
+                    case '\'': return '&apos;';
+                    case '"': return '&quot;';
+                    default: return c;
+                }
+            });
+
+            let xmlOutput = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+            xmlOutput += `<FallbackInspection asin="${escapeXml(task.asin)}" market="${escapeXml(task.market)}" timestamp="${new Date().toISOString()}">\n`;
+            
+            xmlOutput += `  <Prices count="${uniqueMatches.filter(m => m.type === 'PRICE').length}">\n`;
+            for (const m of uniqueMatches.filter(m => m.type === 'PRICE')) {
+                xmlOutput += `    <Match tag="${escapeXml(m.tag)}" id="${escapeXml(m.id || '')}" class="${escapeXml(m.className || '')}">\n`;
+                xmlOutput += `      <Text>${escapeXml(m.text)}</Text>\n`;
+                xmlOutput += `    </Match>\n`;
+            }
+            xmlOutput += `  </Prices>\n`;
+
+            xmlOutput += `  <Shipping count="${uniqueMatches.filter(m => m.type === 'SHIPPING').length}">\n`;
+            for (const m of uniqueMatches.filter(m => m.type === 'SHIPPING')) {
+                xmlOutput += `    <Match tag="${escapeXml(m.tag)}" id="${escapeXml(m.id || '')}" class="${escapeXml(m.className || '')}">\n`;
+                xmlOutput += `      <Text>${escapeXml(m.text)}</Text>\n`;
+                xmlOutput += `    </Match>\n`;
+            }
+            xmlOutput += `  </Shipping>\n`;
+
+            xmlOutput += `</FallbackInspection>\n`;
+
             try {
                 const dir = path.join(process.cwd(), 'debug');
                 if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
                 const filePath = path.join(dir, `${task.asin}_${task.market}_fallback.xml`);
-                fs.writeFileSync(filePath, xmlOutput);
-                console.log(`[Scraper - ${this.name}] Saved fallback results to ${filePath}`);
+                fs.writeFileSync(filePath, xmlOutput, 'utf-8');
+                console.log(`[Scraper - ${this.name}] 📄 File diagnostico XML creato: ${filePath}`);
             } catch (err) {
-                console.error(`[Scraper - ${this.name}] Failed to save fallback XML:`, err);
+                console.error(`[Scraper - ${this.name}] Errore salvataggio file XML:`, err);
             }
+        } else {
+            console.log(`[Scraper - ${this.name}] Nessun match rilevato per le regex di fallback.`);
         }
     }
 
@@ -274,9 +355,9 @@ export class CustomScraperWorker extends BaseWorker {
             }
 
             const parsedResult = this.parseProductData($, task);
-            if (parsedResult.data?.price === null || parsedResult.data?.price === undefined) {
+            if (parsedResult.data?.price === null || parsedResult.data?.price === undefined || parsedResult.data?.shippingCost === null) {
                 this.performFallbackRegexSearch(html, task);
-            }
+            }   
             return parsedResult;
 
         } catch (error: any) {
@@ -286,48 +367,109 @@ export class CustomScraperWorker extends BaseWorker {
 
     // CHIAMATA AJAX REALE ALL' ALL OFFERS DISPLAY (AOD)
     private async extractFromAodAjax(task: Task): Promise<WorkerResult> {
-        const aodUrl = `https://www.${task.market}/gp/product/ajax/aodAjaxMain/ref=dp_aod_unknown_mbc?asin=${task.asin}&pc=dp`;
-        
-        // Spoofing Headers per emulare XMLHttpRequest
+        // Parametri query precisi per attivare l'endpoint AOD completo
+        const aodUrl = `https://www.${task.market}/gp/product/ajax/aodAjaxMain?asin=${task.asin}&m=&qid=${Math.floor(Date.now() / 1000)}&smid=&sourcecustomerorglistid=&sourcecustomerorglistitemid=&sr=8-1&pc=dp`;
+
         const customHeaders = {
             'accept': 'text/html,*/*',
+            'accept-language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
             'x-requested-with': 'XMLHttpRequest',
-            'referer': `https://www.${task.market}/dp/${task.asin}`
+            'referer': `https://www.${task.market}/dp/${task.asin}`,
+            'sec-fetch-dest': 'empty',
+            'sec-fetch-mode': 'cors',
+            'sec-fetch-site': 'same-origin'
         };
 
-        const aodHtml = await this.fetchHtmlWithRetry(aodUrl, task.market, customHeaders);
-        const $aod = cheerio.load(aodHtml);
+        try {
+            const aodHtml = await this.fetchHtmlWithRetry(aodUrl, task.market, customHeaders);
+            const $aod = cheerio.load(aodHtml);
 
-        let bestPrice: number | null = null;
-        let bestShipping: number | null = null;
+            let bestPrice: number | null = null;
+            let bestShipping: number | null = null;
 
-        $aod('#aod-offer').each((_, element) => {
-            const $offer =$aod(element);
-            
-            const conditionText = $offer.find('#aod-offer-heading').text().toLowerCase();
-            const isNew = conditionText.includes('new') || conditionText.includes('nuovo') || conditionText.includes('neuf') || conditionText.includes('neu');
-            
-            if (!isNew) return true; // Skips to next iteration se è un usato
+            // Scansiona tutti i blocchi offerta (incluso il pinned se presente)
+            $aod('#aod-offer, #aod-pinned-offer').each((_, element) => {
+                const $offer =$aod(element);
 
-            const identifierDiv = $offer.find('.apex-core-price-identifier').first();
-            if (identifierDiv.length > 0) {
-                const rawPrice = identifierDiv.attr('data-csa-c-price-to-pay');
-                const rawShipping = identifierDiv.attr('data-csa-c-shipping-charge');
+                // Controllo condizione: accetta "New", "Nuovo", "Neuf", "Neu"
+                const conditionRaw = $offer.find('#aod-offer-heading').text().toLowerCase().trim();
+                const isNew = conditionRaw.includes('new') || 
+                              conditionRaw.includes('nuovo') || 
+                              conditionRaw.includes('neuf') || 
+                              conditionRaw.includes('neu');
 
-                if (rawPrice && rawPrice !== "FREE") {
-                    bestPrice = parseFloat(rawPrice);
-                    bestShipping = (!rawShipping || rawShipping === "FREE") ? 0.0 : parseFloat(rawShipping);
-                    return false; // Interrompe l'iterazione, trovato il prezzo più basso
+                // Se c'è un'indicazione esplicita e NON è nuovo (es. usato/ricondizionato), salta
+                if (conditionRaw && !isNew) return true;
+
+                // 1. Estrazione da attributo data-csa-c-price-to-pay
+                const identifierDiv = $offer.find('.apex-core-price-identifier').first();
+                if (identifierDiv.length > 0) {
+                    const rawPrice = identifierDiv.attr('data-csa-c-price-to-pay');
+                    const rawShipping = identifierDiv.attr('data-csa-c-shipping-charge');
+
+                    if (rawPrice && rawPrice !== "FREE") {
+                        const parsedPrice = parseFloat(rawPrice);
+                        if (!isNaN(parsedPrice) && (bestPrice === null || parsedPrice < bestPrice)) {
+                            bestPrice = parsedPrice;
+
+                            if (rawShipping === "FREE" || !rawShipping) {
+                                bestShipping = 0.0;
+                            } else {
+                                const parsedShip = parseFloat(rawShipping);
+                                bestShipping = isNaN(parsedShip) ? 0.0 : parsedShip;
+                            }
+                        }
+                    }
                 }
+
+                // 2. Fallback interno all'offerta: se data-csa non c'era, leggi il testo visibile
+                if (bestPrice === null) {
+                    const priceText = $offer.find('.apex-pricetopay-accessibility-label, .apex-pricetopay-value .a-offscreen').first().text().trim();
+                    if (priceText) {
+                        const clean = priceText.replace(/[^\d,.]/g, '').replace(',', '.');
+                        const p = parseFloat(clean);
+                        if (!isNaN(p)) bestPrice = p;
+                    }
+                }
+
+                // 3. Fallback spedizione da delivery-message
+                if (bestShipping === null) {
+                    const deliveryEl = $offer.find('[data-csa-c-delivery-price]').first();
+                    const deliveryAttr = deliveryEl.attr('data-csa-c-delivery-price');
+                    if (deliveryAttr) {
+                        if (deliveryAttr.toUpperCase().includes('FREE')) {
+                            bestShipping = 0.0;
+                        } else {
+                            const shipClean = deliveryAttr.replace(/[^\d,.]/g, '').replace(',', '.');
+                            const s = parseFloat(shipClean);
+                            bestShipping = isNaN(s) ? 0.0 : s;
+                        }
+                    }
+                }
+
+                // Appena troviamo la prima offerta NUOVA (sono già ordinate per prezzo crescente da Amazon), fermati
+                if (bestPrice !== null) return false;
+            });
+
+            if (bestPrice === null) {
+                return this.createEmptyResult(task);
             }
-        });
 
-        if (bestPrice === null) return this.createEmptyResult(task);
-
-        return {
-            success: true, timestamp: new Date(),
-            data: { asin: task.asin, market: task.market, price: bestPrice, shippingCost: bestShipping ?? 0.0, currency: "EUR" }
-        };
+            return {
+                success: true,
+                timestamp: new Date(),
+                data: {
+                    asin: task.asin,
+                    market: task.market,
+                    price: bestPrice,
+                    shippingCost: bestShipping ?? 0.0,
+                    currency: "EUR"
+                }
+            };
+        } catch (err: any) {
+            console.error(`[Scraper - ${this.name}] Errore chiamata AOD AJAX:`, err.message);
+            return this.createEmptyResult(task);
+        }
     }
 
     private parseProductData($: cheerio.CheerioAPI, task: Task): WorkerResult {
@@ -341,16 +483,39 @@ export class CustomScraperWorker extends BaseWorker {
 
             if (rawPrice && rawPrice !== "FREE") price = parseFloat(rawPrice);
             if (rawShipping && rawShipping !== "FREE") shippingCost = parseFloat(rawShipping);
+        
+            console.log("DEBUG RAW PRICE:", rawPrice);
         }
 
+        
+        
         if (price === null) {
             const offscreenText = $('.apex-pricetopay-value .a-offscreen').first().text().trim() 
                 || $('#corePrice_feature_div .a-price .a-offscreen').first().text().trim();
                 
             if (offscreenText) {
-                const cleaned = offscreenText.replace(/[^\d,.]/g, ''); 
-                const withoutThousands = cleaned.replace(/\./g, '');
-                price = parseFloat(withoutThousands.replace(',', '.'));
+                // Rimuove la valuta e spazi, lasciando solo cifre, punti e virgole
+                let clean = offscreenText.replace(/[^\d,.]/g, '').trim();
+
+                if (clean.includes(',') && clean.includes('.')) {
+                    // Caso con entrambi i separatori: es. "1.249,99" (EU) o "1,249.99" (US)
+                    const lastDot = clean.lastIndexOf('.');
+                    const lastComma = clean.lastIndexOf(',');
+                    
+                    if (lastComma > lastDot) {
+                        // Formato europeo: 1.249,99 -> rimuovi i punti, sostituisci virgola con punto
+                        clean = clean.replace(/\./g, '').replace(',', '.');
+                    } else {
+                        // Formato anglosassone: 1,249.99 -> rimuovi le virgole
+                        clean = clean.replace(/,/g, '');
+                    }
+                } else if (clean.includes(',')) {
+                    // Solo virgola decimale: es. "744,80" -> "744.80"
+                    clean = clean.replace(',', '.');
+                }
+                // Se contiene solo il punto (es. "744.80"), clean rimane invariato
+
+                price = parseFloat(clean);
             }
         }
 

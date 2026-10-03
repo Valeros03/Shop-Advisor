@@ -1,9 +1,11 @@
-// worker.ts
 import { Task, WorkerResult, WorkerLimits, ApiAdapter, AmazonMarket, ProductRecord } from "./types";
 import axios from "axios";
 import { PrismaClient } from "@prisma/client";
 import { WorkerFactory } from "./factory/WorkerFactory";
 import { ProductUpdater } from "./Updater";
+
+import * as path from "path";
+const { PrismaClient } = require(path.resolve(__dirname, "../../shop-advisor/node_modules/@prisma/client"));
 
 // --- 1. BASE WORKER ---
 export abstract class BaseWorker {
@@ -19,7 +21,6 @@ export abstract class BaseWorker {
     protected lastExecutionTime: number = 0;
     protected lastTaskPromise: Promise<void> = Promise.resolve();
 
-    // Priorità: le API hanno 1 (vengono riempite per prime dal Dispatcher), lo Scraper 99
     public abstract readonly priorityCost: number; 
 
     constructor(
@@ -55,7 +56,6 @@ export abstract class BaseWorker {
         return this.supportedMarkets.includes(market);
     }
 
-    // Riserva Sincrona Atomica (eseguita solo alle 07:00)
     public reserveCapacity(): boolean {
         if (!this.hasCapacity()) return false;
         this.currentDailyUsage++;
@@ -83,7 +83,6 @@ export abstract class BaseWorker {
         await waitPromise;
     }
 
-    // Interfacce per la simulazione matematica delle 00:15 / 07:00
     public abstract setupVirtualSimulation(): void;
     public abstract consumeVirtualCurrency(isFirstTaskForAsin: boolean): boolean;
     
@@ -103,6 +102,7 @@ export class ApiWorker extends BaseWorker {
     private adapter: ApiAdapter;
     
     private virtualTokens: number = 0;
+    private virtualDailyUsage: number = 0;
     private timelineQueue: ScheduledApiTask[] = [];
 
     constructor(
@@ -116,48 +116,42 @@ export class ApiWorker extends BaseWorker {
     }
 
     public setupVirtualSimulation(): void {
-        // La capacità dell'API per la simulazione è il suo limite giornaliero incrociato col TPS
         let maxTokens = this.getRemainingCapacity();
         if (this.limits.rateLimitTps && this.limits.rateLimitTps > 0) {
-            const activeSeconds = 17 * 3600; // 07:00 - 00:00
+            const activeSeconds = 17 * 3600;
             maxTokens = Math.min(maxTokens, activeSeconds * this.limits.rateLimitTps);
         }
         this.virtualTokens = maxTokens;
+        this.virtualDailyUsage = this.currentDailyUsage;
     }
 
     public consumeVirtualCurrency(isFirstTaskForAsin: boolean): boolean {
-        // L'API non fa pause, costa sempre 1 token per ogni task
+        if (this.limits.dailyLimit !== -1 && this.virtualDailyUsage >= this.limits.dailyLimit) {
+            return false;
+        }
         if (this.virtualTokens > 0) {
             this.virtualTokens -= 1;
+            this.virtualDailyUsage++;
             return true;
         }
         return false;
     }
 
     public delegateAndOrganizeTasks(assignedTasks: Task[]): void {
-        console.log(`[API - ${this.name}] Pianificazione di ${assignedTasks.length} task...`);
-        
-        const tasksByAsin = new Map<string, Task[]>();
-        for (const task of assignedTasks) {
-            if (!tasksByAsin.has(task.asin)) tasksByAsin.set(task.asin, []);
-            tasksByAsin.get(task.asin)!.push(task);
-        }
-
+        console.log(`[API - ${this.name}] Pianificazione di ${assignedTasks.length} task lungo la timeline...`);
         const now = Date.now();
         const endOfDay = new Date().setHours(23, 59, 59, 999);
-        const totalWindowMs = endOfDay - now;
-
         this.timelineQueue = [];
 
-        for (const [asin, tasks] of tasksByAsin.entries()) {
-            const bucketSizeMs = totalWindowMs / tasks.length;
-            tasks.forEach((task, index) => {
-                // Jitter minimo per evitare spike simultanei
-                const jitter = Math.random() * (bucketSizeMs * 0.1); 
-                const targetTime = now + (index * bucketSizeMs) + jitter;
-                this.timelineQueue.push({ targetTime, task });
-            });
-        }
+        // Rispettiamo il targetSlotTime imposto a monte dal Dispatcher
+        assignedTasks.forEach((task) => {
+            const baseTime = task.targetSlotTime ?? now;
+            // Jitter leggero (±30s) per non creare richieste in simultanea esatta
+            const jitter = (Math.random() * 60000) - 30000;
+            const targetTime = Math.min(Math.max(baseTime + jitter, now), endOfDay - 1000);
+            this.timelineQueue.push({ targetTime, task });
+        });
+
         this.timelineQueue.sort((a, b) => a.targetTime - b.targetTime);
     }
 
@@ -181,9 +175,12 @@ export class ApiWorker extends BaseWorker {
                     success: true, timestamp: new Date(), data: normalizedData 
                 });
             } catch (error: any) {
-                await updater.submitResult(scheduledJob.task.asin, scheduledJob.task.market, {
-                    success: false, error: error.message, timestamp: new Date() 
-                });
+                await updater.submitResult(
+                    task.asin, 
+                    task.market, 
+                    result, 
+                    task.cycleIndex ?? 0
+                );
             }
         }
         console.log(`[API - ${this.name}] 🏁 Chiusura ciclo giornaliero.`);
@@ -216,9 +213,7 @@ export class SmartDispatcher {
         return this.workers.length > 0;
     }
 
-    // --- LA SIMULAZIONE MATEMATICA DEL MATTINO ---
     private simulateGlobalThroughput(): number {
-        // Le API verranno testate per prime perché costano meno (priorityCost = 1)
         const sortedWorkers = [...this.workers].sort((a, b) => a.priorityCost - b.priorityCost);
         sortedWorkers.forEach(w => w.setupVirtualSimulation());
 
@@ -235,7 +230,6 @@ export class SmartDispatcher {
                     if (worker.supportsMarket(market)) {
                         const isFirstTaskForCycle = !workersUsedForThisCycle.has(worker);
                         
-                        // Scala la valuta virtuale (Gettoni per le API, Secondi esatti per lo Scraper)
                         if (worker.consumeVirtualCurrency(isFirstTaskForCycle)) {
                             taskAllocated = true;
                             workersUsedForThisCycle.add(worker);
@@ -244,7 +238,6 @@ export class SmartDispatcher {
                     }
                 }
                 
-                // Se c'è anche un solo mercato che nessuno ha le risorse per fare, il ciclo fallisce
                 if (!taskAllocated) {
                     cycleFullyAllocated = false;
                     break;
@@ -254,7 +247,7 @@ export class SmartDispatcher {
             if (cycleFullyAllocated) {
                 maxCycles++;
             } else {
-                break; // Il limite globale dell'ecosistema è stato raggiunto.
+                break;
             }
         }
         
@@ -301,19 +294,30 @@ export class SmartDispatcher {
     }
 
     private async applyLoadShedding(planned: { product: DispatcherProductRecord; updatesCount: number }[], maxCycles: number): Promise<Task[]> {
-        let totalCyclesRequested = planned.reduce((sum, p) => sum + p.updatesCount, 0);
+        const initialRequested = planned.reduce((sum, p) => sum + p.updatesCount, 0);
+        let totalCyclesRequested = initialRequested;
         let tasksToMarkMustTomorrow: string[] = [];
 
+        console.log(`\n[Load Shedding] 📊 Inizio bilanciamento carico:`);
+        console.log(`- Capacità massima (maxCycles): ${maxCycles} cicli completi (${maxCycles * 3} task atomici)`);
+        console.log(`- Richiesta iniziale: ${totalCyclesRequested} cicli (${totalCyclesRequested * 3} task atomici) da ${planned.length} prodotti.`);
+
         // FASE A: Taglio degli update multipli
+        let multiCuts = 0;
         while (totalCyclesRequested > maxCycles) {
             const multiUpdateProducts = planned.filter(p => p.updatesCount > 1);
             if (multiUpdateProducts.length === 0) break;
             multiUpdateProducts.sort((a, b) => this.calculateUrgencyScore(a.product) - this.calculateUrgencyScore(b.product));
             multiUpdateProducts[0].updatesCount--;
             totalCyclesRequested--;
+            multiCuts++;
+        }
+        if (multiCuts > 0) {
+            console.log(`- [Fase A] Tagliati ${multiCuts} aggiornamenti multipli sui prodotti meno urgenti.`);
         }
 
         // FASE B: Taglio interi prodotti
+        let droppedProducts = 0;
         if (totalCyclesRequested > maxCycles) {
             planned.sort((a, b) => this.calculateUrgencyScore(a.product) - this.calculateUrgencyScore(b.product));
             for (let i = 0; i < planned.length; i++) {
@@ -321,41 +325,109 @@ export class SmartDispatcher {
                 totalCyclesRequested -= planned[i].updatesCount;
                 planned[i].updatesCount = 0;
                 tasksToMarkMustTomorrow.push(planned[i].product.asin);
+                droppedProducts++;
+            }
+            console.log(`- [Fase B] Rimossi interamente ${droppedProducts} prodotti.`);
+        }
+
+        // FASE C: Backfill slot vuoti
+        let backfilledCycles = 0;
+        if (totalCyclesRequested < maxCycles) {
+            const activeProducts = planned.filter(p => p.updatesCount > 0);
+            activeProducts.sort((a, b) => this.calculateUrgencyScore(b.product) - this.calculateUrgencyScore(a.product));
+
+            for (const p of activeProducts) {
+                if (totalCyclesRequested >= maxCycles) break;
+                if (p.updatesCount < 4) {
+                    p.updatesCount++;
+                    totalCyclesRequested++;
+                    backfilledCycles++;
+                }
+            }
+            if (backfilledCycles > 0) {
+                console.log(`- [Fase C - Ottimizzazione] 🎯 Recuperati ${backfilledCycles} slot liberi.`);
             }
         }
 
+        console.log(`- Bilanciamento completato: ${totalCyclesRequested}/${maxCycles} cicli saturati.\n`);
+
         if (tasksToMarkMustTomorrow.length > 0) {
-            console.warn(`[Dispatcher] Load Shedding: Rimandati ${tasksToMarkMustTomorrow.length} ASIN a domani.`);
             await this.prisma.product.updateMany({
                 where: { asin: { in: tasksToMarkMustTomorrow } },
                 data: { mustTomorrow: true }
             });
         }
 
-        // ESPANSIONE DEI TASK: 1 Prodotto in 3 Task separati
-        const finalTasks: Task[] = [];
+        // --- FASE D: CALCOLO DELLE 4 MACRO-ONDATE GLOBALI & INTERLEAVING ---
+        const now = Date.now();
+        const midnight = new Date();
+        midnight.setHours(23, 59, 59, 999);
+        const totalWindowMs = Math.max(midnight.getTime() - now, 60000);
+
+        // Definiamo 4 Macro-Fasce orarie costanti
+        const NUM_WAVES = 4;
+        const waveDurationMs = totalWindowMs / NUM_WAVES;
+
+        // Prepariamo i contenitori per i cicli completi in ogni ondata
+        const waveBuckets: { asin: string; isMustTomorrow: boolean; cycleIndex: number }[][] = [[], [], [], []];
+
+        let singleUpdateCounter = 0;
+
         for (const p of planned) {
             if (p.updatesCount <= 0) continue;
-            
-            // L'Updater viene informato che si aspetta 3 risultati
-            this.updater.registerExpectation(p.product.asin, this.MARKETS);
+            this.updater.registerExpectation(item.asin, this.MARKETS, item.cycleIndex);
 
-            for (let i = 0; i < p.updatesCount; i++) {
-                for (const market of this.MARKETS) {
-                    finalTasks.push({ asin: p.product.asin, market: market, isMustTomorrow: p.product.mustTomorrow });
-                }
+            if (p.updatesCount === 4) {
+                // Un ciclo per ciascuna delle 4 fasce
+                for (let c = 0; c < 4; c++) waveBuckets[c].push({ asin: p.product.asin, isMustTomorrow: p.product.mustTomorrow, cycleIndex: c });
+            } else if (p.updatesCount === 3) {
+                // Fasce 0, 1 e 3 (distanziate)
+                [0, 1, 3].forEach((w, cIdx) => waveBuckets[w].push({ asin: p.product.asin, isMustTomorrow: p.product.mustTomorrow, cycleIndex: cIdx }));
+            } else if (p.updatesCount === 2) {
+                // Fasce 0 e 2 (mattina/pomeriggio e sera)
+                [0, 2].forEach((w, cIdx) => waveBuckets[w].push({ asin: p.product.asin, isMustTomorrow: p.product.mustTomorrow, cycleIndex: cIdx }));
+            } else if (p.updatesCount === 1) {
+                // INTERLEAVING: Distribuisce i prodotti a singolo ciclo equamente nelle 4 fasce
+                const targetWave = singleUpdateCounter % NUM_WAVES;
+                waveBuckets[targetWave].push({ asin: p.product.asin, isMustTomorrow: p.product.mustTomorrow, cycleIndex: 0 });
+                singleUpdateCounter++;
             }
         }
+
+        // Generazione finale dei Task atomici ordinati per targetSlotTime
+        const finalTasks: Task[] = [];
+
+        for (let w = 0; w < NUM_WAVES; w++) {
+            const bucket = waveBuckets[w];
+            if (bucket.length === 0) continue;
+
+            const waveStartTime = now + (w * waveDurationMs);
+            const stepMs = waveDurationMs / bucket.length;
+
+            bucket.forEach((item, idx) => {
+                const targetSlotTime = Math.min(
+                    waveStartTime + (idx * stepMs),
+                    midnight.getTime() - 2000
+                );
+
+                for (const market of this.MARKETS) {
+                    finalTasks.push({
+                        asin: item.asin,
+                        market,
+                        isMustTomorrow: item.isMustTomorrow,
+                        cycleIndex: item.cycleIndex,
+                        targetSlotTime
+                    });
+                }
+            });
+        }
+
         return finalTasks;
     }
 
-    // --- LA DELEGAZIONE UNICA DELLE 07:00 ---
     private selectWorkerForTask(task: Task): BaseWorker | null {
-        // Seleziona chi supporta il mercato e ha capacità residua reale
         const eligibleWorkers = this.workers.filter(w => w.supportsMarket(task.market) && w.hasCapacity());
         if (eligibleWorkers.length === 0) return null;
-
-        // Verrà sempre selezionata l'API (Priority 1) se disponibile e capiente. Lo Scraper (Priority 99) è il fallback.
         eligibleWorkers.sort((a, b) => a.priorityCost - b.priorityCost);
         return eligibleWorkers[0];
     }
@@ -368,10 +440,8 @@ export class SmartDispatcher {
 
         if (!(await this.healthCheck())) return;
 
-        // 1. Simula per trovare il tetto esatto
         const maxCyclesToday = this.simulateGlobalThroughput();
 
-        // 2. Estrazione dati dal DB
         const rawProducts = await this.prisma.product.findMany({
             select: {
                 id: true, asin: true, priorityCode: true, mustTomorrow: true, lastUpdated: true,
@@ -384,10 +454,8 @@ export class SmartDispatcher {
             lastUpdated: p.lastUpdated, isUserTracked: p._count.alerts > 0
         }));
 
-        // 3. Load Shedding esatto
         const tasks = await this.planDailyTasks(products, maxCyclesToday);
 
-        // 4. DISTRIBUZIONE DEI TASK (Una volta per tutte)
         const taskMap = new Map<BaseWorker, Task[]>();
         for (const w of this.workers) taskMap.set(w, []);
 
@@ -400,20 +468,15 @@ export class SmartDispatcher {
             }
         }
 
-        // 5. I WORKER PARTONO E GESTISCONO LE LORO TIMELINE
         const missionPromises = [];
         for (const [worker, assignedTasks] of taskMap.entries()) {
             if (assignedTasks.length > 0) {
-                // Il worker si organizza l'intera giornata...
                 worker.delegateAndOrganizeTasks(assignedTasks);
-                // ... e parte in totale indipendenza.
                 missionPromises.push(worker.executeDailyMission(this.updater));
             }
         }
 
         await Promise.all(missionPromises);
-        
-        // Alla fine della giornata, se ci sono risultati orfani o zoppi nella RAM dell'updater, li salva forzatamente.
         await this.updater.flushPartialUpdates();
         console.log("[Dispatcher] 🌌 Giornata completata con successo.");
     }
