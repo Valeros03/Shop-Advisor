@@ -26,7 +26,7 @@ async function printCurrentCapacities() {
     const workers = await WorkerFactory.loadAllWorkers();
     
     if (workers.length === 0) {
-        console.warn("[Bootstrap] ⚠️ Nessun worker attivo trovato nei file di configurazione!");
+        console.warn("[Bootstrap] Nessun worker attivo trovato nei file di configurazione!");
         return;
     }
 
@@ -43,7 +43,7 @@ async function searchAmazonForProducts(
     market: AmazonMarket = "amazon.it", 
     maxResults: number = 25
 ): Promise<DiscoveredProduct[]> {
-    console.log(`\n[Bootstrap] 🔍 Ricerca su ${market} per: "${query}"...`);
+    console.log(`\n[Bootstrap] Ricerca su ${market} per: "${query}"...`);
     const searchUrl = `https://www.${market}/s?k=${encodeURIComponent(query)}`;
 
     try {
@@ -71,7 +71,7 @@ async function searchAmazonForProducts(
 
         // Controllo Anti-Bot / CAPTCHA immediato
         if (html.includes("Inserisci i caratteri visualizzati qui sopra") || html.includes("api-services-support@amazon.com") || $('form[action*="validateCaptcha"]').length > 0) {
-            console.warn(`[Bootstrap] ⚠️ Amazon ha risposto con una richiesta di CAPTCHA. Riprova tra pochi istanti.`);
+            console.warn(`[Bootstrap] Amazon ha risposto con una richiesta di CAPTCHA. Riprova tra pochi istanti.`);
             return [];
         }
 
@@ -114,10 +114,10 @@ async function searchAmazonForProducts(
         });
 
         const results = Array.from(discovered.values()).slice(0, maxResults);
-        console.log(`[Bootstrap] ✅ Estratti ${results.length} prodotti con titolo reale e immagine.`);
+        console.log(`[Bootstrap] Estratti ${results.length} prodotti con titolo reale e immagine.`);
         return results;
     } catch (err: any) {
-        console.error(`[Bootstrap] ❌ Errore ricerca Amazon:`, err.message);
+        console.error(`[Bootstrap] Errore ricerca Amazon:`, err.message);
         return [];
     }
 }
@@ -191,12 +191,12 @@ async function runBootstrap(batchSize: number = 10, searchQuery: string = "RAM 3
     const duplicatesCount = pool.length - eligible.length;
 
     if (duplicatesCount > 0) {
-        console.log(`[Bootstrap] ℹ️ Ignorati ${duplicatesCount} prodotti già presenti a database.`);
+        console.log(`[Bootstrap] Ignorati ${duplicatesCount} prodotti già presenti a database.`);
     }
 
     // Preleva il batch desiderato
     const toImport = eligible.slice(0, batchSize);
-    console.log(`\n[Bootstrap] 📥 Inserimento di ${toImport.length} nuovi prodotti nel database...`);
+    console.log(`\n[Bootstrap] Inserimento di ${toImport.length} nuovi prodotti nel database...`);
 
     const insertedAsins: string[] = [];
 
@@ -214,9 +214,9 @@ async function runBootstrap(batchSize: number = 10, searchQuery: string = "RAM 3
                 }
             });
             insertedAsins.push(item.asin);
-            console.log(`  ✓ Inserito [${item.asin}]: ${item.name.slice(0, 60)}...`);
+            console.log(`Inserito [${item.asin}]: ${item.name.slice(0, 60)}...`);
         } catch (err: any) {
-            console.error(`  ✗ Errore inserimento ${item.asin}:`, err.message);
+            console.error(`Errore inserimento ${item.asin}:`, err.message);
         }
     }
 
@@ -225,8 +225,8 @@ async function runBootstrap(batchSize: number = 10, searchQuery: string = "RAM 3
     const updatedPool = pool.filter(p => !processedSet.has(p.asin));
     savePool(updatedPool);
 
-    console.log(`\n[Bootstrap] 🧹 Staging pool aggiornato. Prodotti rimasti nel file: ${updatedPool.length}`);
-    console.log(`[Bootstrap] 🚀 ${insertedAsins.length} prodotti completi inseriti con successo!`);
+    console.log(`\n[Bootstrap] Staging pool aggiornato. Prodotti rimasti nel file: ${updatedPool.length}`);
+    console.log(`[Bootstrap] ${insertedAsins.length} prodotti completi inseriti con successo!`);
 
     await prisma.$disconnect();
 }

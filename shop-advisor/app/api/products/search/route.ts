@@ -8,10 +8,14 @@ if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
-    const q = searchParams.get('q');
+    const rawQ = searchParams.get('q');
+    if (!rawQ || typeof rawQ !== 'string') {
+      return NextResponse.json({ error: 'Parametro q mancante' }, { status: 400 });
+    }
 
-    if (!q) {
-      return NextResponse.json({ error: 'Missing query parameter q' }, { status: 400 });
+    const q = rawQ.trim().slice(0, 100); // Limita al massimo a 100 caratteri
+    if (q.length < 2) {
+      return NextResponse.json([]); // Evita query pesanti con stringhe da 1 singolo carattere
     }
 
     const products = await prisma.product.findMany({

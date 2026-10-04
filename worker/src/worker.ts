@@ -167,11 +167,7 @@ export class ApiWorker extends BaseWorker {
 
     public async executeDailyMission(updater: ProductUpdater): Promise<void> {
         while (this.timelineQueue.length > 0) {
-            // 1. Controllo limite mezzanotte prima di estrarre il task
             if (this.isPastMidnight()) {
-                console.warn(`[Scraper - ${this.name}] Mezzanotte raggiunta! Stop a nuovi task.`);
-                
-                // Informa l'updater di tutti i task scartati per non lasciarlo in attesa
                 for (const job of this.timelineQueue) {
                     updater.cancelPendingTask(job.task.asin, job.task.market, job.task.cycleIndex ?? 0);
                 }
@@ -181,17 +177,13 @@ export class ApiWorker extends BaseWorker {
 
             const scheduledJob = this.timelineQueue.shift()!;
             
-            // 2. Attesa dello slot temporale programmato
             const msUntilTarget = scheduledJob.targetTime - Date.now();
             if (msUntilTarget > 0) {
                 await new Promise(resolve => setTimeout(resolve, msUntilTarget));
             }
 
-            // 3. Secondo controllo dopo l'attesa (in caso l'attesa abbia superato mezzanotte)
             if (this.isPastMidnight()) {
-                console.warn(`[Scraper - ${this.name}] Mezzanotte superata durante l'attesa per ${scheduledJob.task.asin}.`);
                 updater.cancelPendingTask(scheduledJob.task.asin, scheduledJob.task.market, scheduledJob.task.cycleIndex ?? 0);
-                
                 for (const job of this.timelineQueue) {
                     updater.cancelPendingTask(job.task.asin, job.task.market, job.task.cycleIndex ?? 0);
                 }
@@ -199,33 +191,37 @@ export class ApiWorker extends BaseWorker {
                 break;
             }
 
-            // 4. Rate limiting organico
             await this.enforceRateLimit();
 
-            // 5. Esecuzione task
             try {
-                const result = await this.scraper.scrape(scheduledJob.task);
+                const config = this.adapter.buildRequestConfig(scheduledJob.task, this.apiKey);
+                const response = await axios(config);
+                const normalized: any = this.adapter.extractData(response.data);
+
                 await updater.submitResult(
                     scheduledJob.task.asin, 
                     scheduledJob.task.market, 
-                    result, 
+                    {
+                        success: normalized.price !== null && normalized.price !== undefined,
+                        data: normalized,
+                        timestamp: new Date()
+                    } as any, 
                     scheduledJob.task.cycleIndex ?? 0
                 );
             } catch (error: any) {
-                console.error(`[Scraper - ${this.name}] Fallimento task ${scheduledJob.task.asin} (${scheduledJob.task.market}):`, error.message);
+                const errDetail = error.response?.data?.error || error.response?.data || error.message;
+                console.error(`[API - ${this.name}] Fallimento task ${scheduledJob.task.asin} (${scheduledJob.task.market}):`, errDetail);
                 
                 await updater.submitResult(
                     scheduledJob.task.asin, 
                     scheduledJob.task.market, 
-                    { success: false, error: error.message, timestamp: new Date() }, 
+                    { success: false, error: String(errDetail), timestamp: new Date() }, 
                     scheduledJob.task.cycleIndex ?? 0
                 );
             }
         }
-        console.log(`[Scraper - ${this.name}] Chiusura ciclo giornaliero.`);
     }
 }
-
 // --- 3. SMART DISPATCHER ---
 interface DispatcherProductRecord extends ProductRecord {
     isUserTracked: boolean;
@@ -320,6 +316,15 @@ export class SmartDispatcher {
         let plannedUpdates: { product: DispatcherProductRecord; updatesCount: number }[] = [];
         const now = Date.now();
 
+        // Determina le ore 07:00 della giornata operativa odierna sul fuso italiano
+        const { now: italianDate, hour: italianHour } = this.getItalianTime();
+        const operationalStart = new Date(italianDate);
+        if (italianHour < 7) {
+            // Se eseguito prima delle 07:00, la giornata operativa di riferimento è quella di ieri
+            operationalStart.setDate(operationalStart.getDate() - 1);
+        }
+        operationalStart.setHours(7, 0, 0, 0);
+
         for (const p of products) {
             let updatesToday = 0;
             const msSinceUpdate = now - p.lastUpdated.getTime();
@@ -346,13 +351,18 @@ export class SmartDispatcher {
                         break;
 
                     case 3:
-                        // Priorità 3 (1 volta ogni 24h):
-                        // Se è già stato scansionato nelle ultime 24 ore, NON va pianificato oggi!
-                        if (hoursSinceUpdate >= 24) {
+                        // Priorità 3 (1 volta al giorno lavorativo):
+                        // Se l'ultimo aggiornamento è precedente alle 07:00 di OGGI, va pianificato!
+                        const alreadyUpdatedToday = p.lastUpdated.getTime() >= operationalStart.getTime();
+
+                        if (!alreadyUpdatedToday) {
                             updatesToday = 1;
                         } else {
-                            const hoursRemaining = (24 - hoursSinceUpdate).toFixed(1);
-                            console.log(`[Dispatcher] Salto ASIN ${p.asin} (Priorità 3): già aggiornato ${hoursSinceUpdate.toFixed(1)}h fa. Prossimo ciclo tra ${hoursRemaining}h.`);
+                            // Già fatto oggi: calcoliamo quanto manca alle 07:00 di domani
+                            const next7AM = new Date(operationalStart);
+                            next7AM.setDate(next7AM.getDate() + 1);
+                            const hoursToTomorrow7AM = Math.max(0, (next7AM.getTime() - now) / (1000 * 3600)).toFixed(1);
+                            console.log(`[Dispatcher] Salto ASIN ${p.asin} (Priorità 3): già aggiornato oggi alle ${p.lastUpdated.toLocaleTimeString('it-IT')}. Programmato per domani alle 07:00 (tra ${hoursToTomorrow7AM}h).`);
                         }
                         break;
 
@@ -427,10 +437,9 @@ export class SmartDispatcher {
         // FASE C: Backfill slot vuoti
         let backfilledCycles = 0;
         if (totalCyclesRequested < maxCycles) {
-            const activeProducts = planned.filter(p => p.updatesCount > 0);
-            activeProducts.sort((a, b) => this.calculateUrgencyScore(b.product) - this.calculateUrgencyScore(a.product));
+            const eligibleForBoost = planned.filter(p => p.updatesCount > 0 && p.product.priorityCode <= 2);
 
-            for (const p of activeProducts) {
+            for (const p of eligibleForBoost) {
                 if (totalCyclesRequested >= maxCycles) break;
                 if (p.updatesCount < 4) {
                     p.updatesCount++;
@@ -453,14 +462,18 @@ export class SmartDispatcher {
         }
 
         // --- FASE D: CALCOLO DELLE 4 MACRO-ONDATE GLOBALI & INTERLEAVING ---
-        const { now } = this.getItalianTime();
-        const midnightItalian = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
+        const { now: italianNowDate } = this.getItalianTime();
+        
+        // Calcola la mezzanotte italiana usando l'oggetto Date
+        const midnightItalian = new Date(italianNowDate.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
         midnightItalian.setHours(24, 0, 0, 0);
 
-        const totalWindowMs = Math.max(midnightItalian.getTime() - now.getTime(), 60000);
+        // Estrai il timestamp numerico in ms
+        const nowMs = italianNowDate.getTime();
+        const totalWindowMs = Math.max(midnightItalian.getTime() - nowMs, 60000);
         const NUM_WAVES = 4;
         const waveDurationMs = totalWindowMs / NUM_WAVES;
-
+        
         // Prepariamo i contenitori per i cicli completi in ogni ondata
         const waveBuckets: { asin: string; isMustTomorrow: boolean; cycleIndex: number }[][] = [[], [], [], []];
 
@@ -500,22 +513,25 @@ export class SmartDispatcher {
 
         for (let w = 0; w < NUM_WAVES; w++) {
             const bucket = waveBuckets[w];
-            if (bucket.length === 0) continue;
+            if (!bucket || bucket.length === 0) continue;
 
-            const waveStartTime = now + (w * waveDurationMs);
-            const stepMs = waveDurationMs / bucket.length;
+            const validItems = bucket.filter(item => item && item.asin);
+            if (validItems.length === 0) continue;
 
-            bucket.forEach((item, idx) => {
+            const waveStartTime = nowMs + (w * waveDurationMs);
+            const stepMs = waveDurationMs / validItems.length;
+
+            validItems.forEach((item, idx) => {
                 const targetSlotTime = Math.min(
                     waveStartTime + (idx * stepMs),
-                    midnight.getTime() - 2000
+                    midnightItalian.getTime() - 2000
                 );
 
                 for (const market of this.MARKETS) {
                     finalTasks.push({
                         asin: item.asin,
                         market,
-                        isMustTomorrow: item.isMustTomorrow,
+                        isMustTomorrow: Boolean(item.isMustTomorrow),
                         cycleIndex: item.cycleIndex,
                         targetSlotTime
                     });
@@ -617,9 +633,9 @@ export class SmartDispatcher {
                 if (missionPromises.length > 0) {
                     await Promise.all(missionPromises);
                     await this.updater.flushPartialUpdates();
-                    console.log("[Dispatcher] 🌌 Tutte le scansioni previste per oggi sono state completate.");
+                    console.log("[Dispatcher] Tutte le scansioni previste per oggi sono state completate.");
                 } else {
-                    console.log("[Dispatcher] ☕ Nessun task da eseguire per la giornata odierna.");
+                    console.log("[Dispatcher] Nessun task da eseguire per la giornata odierna.");
                 }
 
                 // 5. FINESTRA DI TREGUA (15 minuti dopo la mezzanotte: fino alle 00:15)

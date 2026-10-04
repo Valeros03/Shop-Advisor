@@ -17,6 +17,8 @@ export interface UnifiedPriceAlertPayload {
     imageUrl?: string;
 }
 
+export type SendAlertResult = "SENT" | "BLOCKED" | "FAILED";
+
 export class TelegramNotificationService {
     private botToken: string;
     private baseUrl: string;
@@ -42,8 +44,8 @@ export class TelegramNotificationService {
      */
     public async sendPriceAlert(payload: UnifiedPriceAlertPayload): Promise<boolean> {
         if (!this.botToken) {
-            console.log(`[TelegramService] [SIMULAZIONE] Notifica inviata a ${payload.telegramId} per ASIN ${payload.asin} (Miglior prezzo: ${payload.bestPrice}€)`);
-            return true;
+            console.log(`[TelegramService] Notifica a ${payload.telegramId}`);
+            return "SENT";
         }
 
         const bestMarketName = this.marketLabels[payload.bestMarket] || payload.bestMarket;
@@ -81,16 +83,13 @@ export class TelegramNotificationService {
             `<i>I prezzi visualizzati includono già l'adeguamento IVA per l'Italia e la spedizione standard.</i>`;
 
         try {
-            // Se c'è un'immagine valida, invia con foto (sendPhoto), altrimenti messaggio testuale (sendMessage)
             if (payload.imageUrl && payload.imageUrl.startsWith("http")) {
                 await axios.post(`${this.baseUrl}/sendPhoto`, {
                     chat_id: payload.telegramId,
                     photo: payload.imageUrl,
                     caption: messageText,
                     parse_mode: "HTML",
-                    reply_markup: {
-                        inline_keyboard: inlineKeyboardButtons
-                    }
+                    reply_markup: { inline_keyboard: inlineKeyboardButtons }
                 });
             } else {
                 await axios.post(`${this.baseUrl}/sendMessage`, {
@@ -98,18 +97,24 @@ export class TelegramNotificationService {
                     text: messageText,
                     parse_mode: "HTML",
                     disable_web_page_preview: false,
-                    reply_markup: {
-                        inline_keyboard: inlineKeyboardButtons
-                    }
+                    reply_markup: { inline_keyboard: inlineKeyboardButtons }
                 });
             }
 
-            console.log(`[TelegramService] Alert inviato con successo a Telegram ID ${payload.telegramId} per ASIN ${payload.asin}`);
-            return true;
+            console.log(`[TelegramService] Alert inviato con successo a ${payload.telegramId}`);
+            return "SENT";
         } catch (error: any) {
+            const status = error.response?.status;
             const description = error.response?.data?.description || error.message;
-            console.error(`[TelegramService] Errore durante l'invio dell'alert a ${payload.telegramId}:`, description);
-            return false;
+
+            // Telegram restituisce 403 quando l'utente ha bloccato il bot o cancellato la chat
+            if (status === 403 || (description && description.toLowerCase().includes("blocked"))) {
+                console.warn(`[TelegramService] Utente ${payload.telegramId} ha bloccato il bot. Disattivazione richiesta.`);
+                return "BLOCKED";
+            }
+
+            console.error(`[TelegramService] Errore invio alert a ${payload.telegramId}:`, description);
+            return "FAILED";
         }
     }
 }

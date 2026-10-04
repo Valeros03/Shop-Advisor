@@ -7,3 +7,12 @@ test.db
 node fix_exports.js
 
 test.db
+
+**/.next
+**/node_modules
+**/.git
+**/.env
+**/.env.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*

@@ -225,9 +225,10 @@ export class ProductUpdater {
         marketPrices: { market: string; price: number }[]
     ): Promise<void> {
         try {
-            // Troviamo il prezzo minimo assoluto
+            // Troviamo il prezzo minimo assoluto tra i mercati scansionati
             const absoluteLowest = Math.min(...marketPrices.map(m => m.price));
 
+            // Cerchiamo tutti gli alert attivi con target compatibile
             const triggeredAlerts = await this.prisma.alert.findMany({
                 where: {
                     productId,
@@ -239,39 +240,56 @@ export class ProductUpdater {
 
             if (triggeredAlerts.length === 0) return;
 
-            console.log(`[Updater] 🎯 Trovati ${triggeredAlerts.length} alert da notificare per ASIN ${asin}`);
-
             for (const alert of triggeredAlerts) {
-                // Filtra solo i mercati che rispettano il target di questo utente
+                // Filtra solo i mercati che rispettano il target impostato dall'utente
                 const qualifying = marketPrices.filter(m => m.price <= alert.targetPrice);
                 if (qualifying.length === 0) continue;
 
-                // Ordina dal più conveniente al più costoso
                 qualifying.sort((a, b) => a.price - b.price);
                 const bestMarketEntry = qualifying[0];
+                const currentBestPrice = bestMarketEntry.price;
+
+                // --- CONTROLLO MEMORIA PREZZO ---
+                // Notifica se è la prima volta (null) oppure se il prezzo è sceso ulteriormente / cambiato
+                const hasPriceChanged = alert.lastNotifiedPrice === null || alert.lastNotifiedPrice === undefined || currentBestPrice < alert.lastNotifiedPrice;
+
+                if (!hasPriceChanged) {
+                    // Prezzo già notificato in precedenza e non è sceso ulteriormente: evitiamo lo spam
+                    continue;
+                }
 
                 const telegramIdStr = alert.user.telegramId.toString();
 
-                const sent = await telegramNotifier.sendPriceAlert({
+                const result = await telegramNotifier.sendPriceAlert({
                     telegramId: telegramIdStr,
                     productName: productName,
                     asin: asin,
                     targetPrice: alert.targetPrice,
-                    bestPrice: bestMarketEntry.price,
+                    bestPrice: currentBestPrice,
                     bestMarket: bestMarketEntry.market,
                     qualifyingMarkets: qualifying,
                     imageUrl: imageUrl
                 });
 
-                if (sent) {
-                    // One-Shot: disattiva l'alert per evitare di ripeterlo nei controlli successivi
+                if (result === "SENT") {
+                    console.log(`[Updater] Alert notificato a Telegram per utente ${alert.userId} su ASIN ${asin} (Nuovo prezzo: ${currentBestPrice}€)`);
+                    
+                    // Salviamo il nuovo prezzo notificato MANTENENDO l'alert attivo
                     await this.prisma.alert.update({
                         where: { id: alert.id },
+                        data: {
+                            lastNotifiedPrice: currentBestPrice,
+                            isActive: true
+                        }
+                    });
+                } else if (result === "BLOCKED") {
+                    console.log(`[Updater] Disattivo gli alert per l'utente ${alert.userId} (bot bloccato su Telegram).`);
+                    await this.prisma.alert.updateMany({
+                        where: { userId: alert.userId },
                         data: { isActive: false }
                     });
                 }
 
-                // Pausa di rispetto rate-limit Telegram
                 await new Promise(resolve => setTimeout(resolve, 60));
             }
         } catch (e: any) {
@@ -288,7 +306,7 @@ export class ProductUpdater {
     }
 
     public async flushPartialUpdates(): Promise<void> {
-        console.log(`[Updater] 🧹 Consolidamento finale richieste parziali (${this.pendingUpdates.size} in sospeso)...`);
+        console.log(`[Updater] Consolidamento finale richieste parziali (${this.pendingUpdates.size} in sospeso)...`);
         
         const incompleteAsins = new Set<string>();
 
@@ -321,7 +339,7 @@ export class ProductUpdater {
 
             const asinsToFlag = productsWithoutTodayUpdate.map(p => p.asin);
             if (asinsToFlag.length > 0) {
-                console.warn(`[Updater] 📌 ${asinsToFlag.length} prodotti privi di aggiornamenti odierni segnati con mustTomorrow: true`);
+                console.warn(`[Updater] ${asinsToFlag.length} prodotti privi di aggiornamenti odierni segnati con mustTomorrow: true`);
                 await this.markDeferredAsins(asinsToFlag);
             }
         }

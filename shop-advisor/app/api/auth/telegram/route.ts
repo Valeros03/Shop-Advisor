@@ -41,6 +41,13 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Autenticazione non valida' }, { status: 401 });
     }
 
+    const authDate = Number(userData.auth_date);
+    const nowInSeconds = Math.floor(Date.now() / 1000);
+    // Se i dati hanno più di 15 minuti (900 secondi), rifiuta la richiesta
+    if (!authDate || nowInSeconds - authDate > 900) {
+      return NextResponse.json({ error: 'Sessione di autenticazione scaduta' }, { status: 401 });
+    }
+
     console.log("HASH CORRETTO! Autenticazione Telegram riuscita. Salvo su Prisma...");
 
     // 2. Salvataggio / Aggiornamento utente nel Database (USANDO BIGINT)
