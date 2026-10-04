@@ -18,7 +18,7 @@ export async function GET() {
           _count: 'desc',
         },
       },
-      take: 6,
+      take: 3,
     });
 
     const formattedProducts = products.map((product) => {

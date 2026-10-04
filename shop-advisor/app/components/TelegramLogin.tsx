@@ -26,7 +26,7 @@ export default function TelegramLogin() {
 
         if (response.ok) {
         // Login confermato dal backend, reindirizziamo alla dashboard!
-        window.location.href = '/dashboard';
+        window.location.href = '/';
         } else {
         alert("Errore durante la validazione dell'accesso.");
         }

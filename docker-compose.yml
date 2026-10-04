@@ -34,6 +34,11 @@ services:
       context: .
       dockerfile: worker/Dockerfile
     container_name: shopadvisor-product-worker
+    volumes:
+      - ./worker:/worker
+      - /worker/node_modules
+      # Monta il file schema.prisma di shop-advisor:
+      - ./shop-advisor/prisma/schema.prisma:/worker/prisma/schema.prisma:ro
     environment:
       - DATABASE_URL=postgresql://admin:password123@db:5432/shopadvisor?schema=public
     env_file:

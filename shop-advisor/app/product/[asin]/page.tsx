@@ -49,8 +49,14 @@ export default function ProductPage() {
   }, [asin]);
 
   const parsedAlertPrice = parseFloat(alertPrice) || 0;
-  const isPriceTooLow = productData && parsedAlertPrice > 0 && parsedAlertPrice < (productData.absoluteMin * 0.95);
+const isPriceTooLow = 
+  productData && 
+  productData.hasLongHistory && 
+  parsedAlertPrice > 0 && 
+  parsedAlertPrice < (productData.absoluteMin * 0.80);
 
+// Info per prodotti con monitoraggio iniziato da poco
+const isNewTracking = productData && !productData.hasLongHistory;
   const handleSaveAlert = async () => {
     if (!asin || parsedAlertPrice <= 0) return;
 
@@ -163,59 +169,168 @@ export default function ProductPage() {
                 />
                 <Legend iconType="circle" wrapperStyle={{ fontSize: '14px', paddingTop: '10px' }} />
                 
-                <Line type="monotone" dataKey="IT" name="Amazon IT" stroke="#2b8a3e" strokeWidth={3} dot={false} activeDot={{ r: 6 }} />
-                <Line type="monotone" dataKey="FR" name="Amazon FR" stroke="#3b82f6" strokeWidth={3} dot={false} />
-                <Line type="monotone" dataKey="DE" name="Amazon DE" stroke="#f59e0b" strokeWidth={3} dot={false} />
+                <Line 
+                  type="monotone" 
+                  dataKey="IT" 
+                  name="Amazon IT" 
+                  stroke="#2b8a3e" 
+                  strokeWidth={3} 
+                  dot={{ r: 4, strokeWidth: 1, fill: '#2b8a3e' }} 
+                  activeDot={{ r: 6 }} 
+                  connectNulls 
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="FR" 
+                  name="Amazon FR" 
+                  stroke="#3b82f6" 
+                  strokeWidth={3} 
+                  dot={{ r: 4, strokeWidth: 1, fill: '#3b82f6' }} 
+                  activeDot={{ r: 6 }} 
+                  connectNulls 
+                />
+                <Line 
+                  type="monotone" 
+                  dataKey="DE" 
+                  name="Amazon DE" 
+                  stroke="#f59e0b" 
+                  strokeWidth={3} 
+                  dot={{ r: 4, strokeWidth: 1, fill: '#f59e0b' }} 
+                  activeDot={{ r: 6 }} 
+                  connectNulls 
+                />
               </LineChart>
             </ResponsiveContainer>
           </div>
         </div>
 
         {/* COLONNA DESTRA: Box Attivazione Alert */}
+        {/* COLONNA DESTRA: Box Gestione / Attivazione Alert */}
         <div className="bg-gray-800 rounded-3xl p-6 border-2 border-gray-700 flex flex-col justify-between">
           <div>
-            <div className="flex items-center gap-2 mb-2">
-              <Bell className="text-[#2b8a3e] w-6 h-6" />
-              <h2 className="text-xl font-bold text-white">Traccia questo prodotto</h2>
+            {/* Header del Box con stato di tracciamento */}
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <Bell className={productData.isUserTracking ? "text-green-400 w-6 h-6 animate-pulse" : "text-[#2b8a3e] w-6 h-6"} />
+                <h2 className="text-xl font-bold text-white">
+                  {productData.isUserTracking ? "Prodotto Tracciato" : "Traccia questo prodotto"}
+                </h2>
+              </div>
+              {productData.isUserTracking && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-green-500/20 text-green-300 border border-green-500/30">
+                  <CheckCircle2 size={13} /> Attivo
+                </span>
+              )}
             </div>
-            <p className="text-gray-400 text-sm mb-6">
-              Ti invieremo un messaggio su Telegram appena il prezzo finale scende sotto la tua soglia.
+
+            <p className="text-gray-400 text-sm mb-4">
+              {productData.isUserTracking
+                ? "Riceverai una notifica Telegram appena una delle offerte scende sotto la tua soglia."
+                : "Ti invieremo un messaggio su Telegram appena il prezzo finale scende sotto la tua soglia."}
             </p>
 
-            <label className="block text-sm font-semibold text-gray-300 mb-2">
-              Prezzo Desiderato (€)
-            </label>
+            {/* Riepilogo soglia attiva se già tracciato */}
+            {productData.isUserTracking && productData.currentAlertPrice && (
+              <div className="mb-4 p-3 bg-gray-900/80 rounded-xl border border-gray-700/60 flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] text-gray-400 font-bold uppercase tracking-wider">Soglia attuale impostata</div>
+                  <div className="text-xl font-black text-green-400">{productData.currentAlertPrice.toFixed(2)}€</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!confirm("Vuoi smettere di tracciare questo prodotto?")) return;
+                    setIsSaving(true);
+                    try {
+                      const res = await fetch(`/api/alerts?asin=${asin}`, { method: "DELETE" });
+                      if (res.ok) {
+                        setProductData({ ...productData, isUserTracking: false, currentAlertPrice: null });
+                      }
+                    } finally {
+                      setIsSaving(false);
+                    }
+                  }}
+                  className="text-xs text-red-400 hover:text-red-300 underline font-semibold transition-colors"
+                >
+                  Rimuovi tracciamento
+                </button>
+              </div>
+            )}
+
+            {/* Input Prezzo Desiderato con pulsante Prezzo Consigliato */}
+            <div className="flex items-center justify-between mb-2">
+              <label className="block text-sm font-semibold text-gray-300">
+                {productData.isUserTracking ? "Modifica Soglia Alert (€)" : "Prezzo Desiderato (€)"}
+              </label>
+              {productData.recommendedPrice > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setAlertPrice(productData.recommendedPrice.toString())}
+                  className="text-xs text-[#2b8a3e] hover:text-green-400 font-bold transition-colors underline"
+                  title="Applica il prezzo calcolato dal sistema"
+                >
+                  Suggerito: {productData.recommendedPrice.toFixed(2)}€
+                </button>
+              )}
+            </div>
+
             <div className="relative mb-4">
               <input 
                 type="number" 
+                step="0.01"
                 value={alertPrice}
                 onChange={(e) => setAlertPrice(e.target.value)}
+                placeholder={productData.recommendedPrice ? productData.recommendedPrice.toString() : "0.00"}
                 className="w-full bg-gray-900 border border-gray-600 text-white text-2xl font-bold rounded-xl py-4 pl-6 pr-12 focus:outline-none focus:border-[#2b8a3e] focus:ring-1 focus:ring-[#2b8a3e] transition-colors"
               />
               <span className="absolute right-6 top-1/2 -translate-y-1/2 text-gray-400 text-xl font-bold">€</span>
             </div>
 
-            {/* Banner Dinamico se il prezzo è troppo basso */}
-            {isPriceTooLow && (
+            {/* Banner Dinamico Intelligente */}
+            {isPriceTooLow ? (
               <div className="bg-orange-500/10 border border-orange-500/30 p-3 rounded-lg flex items-start gap-3 mb-4 animate-in fade-in">
                 <AlertTriangle className="text-orange-500 w-5 h-5 flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-orange-200 leading-tight">
-                  Questo prezzo è inferiore al minimo storico dell&apos;ultimo anno ({absoluteMin.toFixed(2)}€). Potrebbe non essere mai raggiunto.
+                  Questo prezzo è inferiore di oltre il 20% rispetto al minimo storico registrato ({productData.absoluteMin.toFixed(2)}€). Potrebbe richiedere tempo per essere raggiunto.
                 </p>
               </div>
-            )}
+            ) : isNewTracking && parsedAlertPrice > 0 ? (
+              <div className="bg-blue-500/10 border border-blue-500/20 p-3 rounded-lg flex items-start gap-3 mb-4 animate-in fade-in">
+                <Info className="text-blue-400 w-4 h-4 flex-shrink-0 mt-0.5" />
+                <p className="text-xs text-blue-200 leading-tight">
+                  Monitoraggio iniziato di recente. Ti avviseremo non appena il prezzo scenderà sotto la soglia impostata.
+                </p>
+              </div>
+            ) : null}
           </div>
 
+          {/* Pulsante Azione Dinamico */}
           <button 
-            onClick={handleSaveAlert}
-            disabled={isSaved || isSaving}
+            onClick={async () => {
+              await handleSaveAlert();
+              // Aggiorna lo stato locale dopo il salvataggio
+              setProductData((prev: any) => ({
+                ...prev,
+                isUserTracking: true,
+                currentAlertPrice: parsedAlertPrice
+              }));
+            }}
+            disabled={isSaving || parsedAlertPrice <= 0}
             className={`w-full py-4 rounded-xl font-bold text-lg flex justify-center items-center gap-2 transition-all shadow-lg ${
-              isSaved 
-              ? "bg-gray-700 text-gray-300 cursor-not-allowed" 
-              : "bg-[#2b8a3e] hover:bg-[#227031] text-white hover:shadow-green-900/20"
-            } ${isSaving ? 'opacity-70 cursor-wait' : ''}`}
+              isSaving
+                ? "bg-gray-700 text-gray-400 cursor-wait opacity-70"
+                : productData.isUserTracking
+                  ? "bg-[#2b8a3e] hover:bg-[#227031] text-white"
+                  : "bg-[#2b8a3e] hover:bg-[#227031] text-white hover:shadow-green-900/20"
+            }`}
           >
-            {isSaving ? <><Loader2 className="animate-spin" /> Salvataggio...</> : isSaved ? <><CheckCircle2 /> Alert Attivo</> : "Attiva Alert"}
+            {isSaving ? (
+              <><Loader2 className="animate-spin" /> Salvataggio...</>
+            ) : productData.isUserTracking ? (
+              <><CheckCircle2 /> Aggiorna Prezzo Alert</>
+            ) : (
+              "Attiva Alert"
+            )}
           </button>
         </div>
       </div>
