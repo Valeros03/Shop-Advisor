@@ -9,19 +9,67 @@ const prisma = new PrismaClient();
 
 export class WorkerFactory {
     
-    // Legge l'utilizzo reale persistito nel database
     private static async getUsageFromDB(workerName: string) {
         try {
-            const stat = await prisma.workerStat.findUnique({
+            const now = new Date();
+            
+            // Calcolo inizio giornata operativa odierna (ore 07:00)
+            const currentOperationalStart = new Date(now);
+            if (now.getHours() < 7) {
+                currentOperationalStart.setDate(currentOperationalStart.getDate() - 1);
+            }
+            currentOperationalStart.setHours(7, 0, 0, 0);
+
+            let stat = await prisma.workerStat.findUnique({
                 where: { name: workerName }
             });
-            if (!stat) return { daily: 0, monthly: 0, lifetime: 0 };
+
+            // Se non esiste ancora sul DB, parte pulito da 0 per tutti i worker
+            if (!stat) {
+                stat = await prisma.workerStat.create({
+                    data: {
+                        name: workerName,
+                        dailyUsage: 0,
+                        monthlyUsage: 0,
+                        lifetimeUsage: 0,
+                        lastResetDaily: now
+                    }
+                });
+                return {
+                    daily: stat.dailyUsage,
+                    monthly: stat.monthlyUsage,
+                    lifetime: stat.lifetimeUsage
+                };
+            }
+
+            // Controllo reset giornaliero (ore 07:00)
+            const shouldResetDaily = stat.lastResetDaily.getTime() < currentOperationalStart.getTime();
+
+            // Controllo reset mensile (cambio mese di calendario)
+            const shouldResetMonthly = now.getMonth() !== stat.lastResetDaily.getMonth() || 
+                                       now.getFullYear() !== stat.lastResetDaily.getFullYear();
+
+            if (shouldResetDaily || shouldResetMonthly) {
+                const newDaily = shouldResetDaily ? 0 : stat.dailyUsage;
+                const newMonthly = shouldResetMonthly ? 0 : stat.monthlyUsage;
+
+                stat = await prisma.workerStat.update({
+                    where: { name: workerName },
+                    data: {
+                        dailyUsage: newDaily,
+                        monthlyUsage: newMonthly,
+                        lastResetDaily: now
+                    }
+                });
+            }
+
             return {
                 daily: stat.dailyUsage,
                 monthly: stat.monthlyUsage,
                 lifetime: stat.lifetimeUsage
             };
-        } catch {
+        } catch (error: any) {
+            console.error(`[Factory] Errore lettura statistiche per ${workerName}:`, error.message);
             return { daily: 0, monthly: 0, lifetime: 0 };
         }
     }
@@ -38,7 +86,6 @@ export class WorkerFactory {
                 const configPath = path.join(apiConfigDir, file);
                 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
-                // Legge la chiave: prima da api_key diretta, poi da process.env[env_key]
                 const apiKey = config.api_key || (config.env_key ? process.env[config.env_key] : undefined);
                 if (!apiKey || apiKey === "LA_TUA_CHIAVE_QUI") {
                     console.warn(`[Factory] Salto ${config.name}: Chiave API non valida o placeholder presente.`);
@@ -63,7 +110,7 @@ export class WorkerFactory {
                 );
                 
                 workers.push(worker);
-                console.log(`[Factory] Caricato API Worker: ${config.name}`);
+                console.log(`[Factory] Caricato API Worker: ${config.name} (Uso: D:${initialUsage.daily}, M:${initialUsage.monthly}, L:${initialUsage.lifetime})`);
             }
         }
 
@@ -86,7 +133,7 @@ export class WorkerFactory {
                 );
 
                 workers.push(worker);
-                console.log(`[Factory] Caricato Scraper Worker: ${config.name}`);
+                console.log(`[Factory] Caricato Scraper Worker: ${config.name} (Uso: D:${initialUsage.daily}, M:${initialUsage.monthly}, L:${initialUsage.lifetime})`);
             }
         }
 

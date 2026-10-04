@@ -21,6 +21,7 @@ export abstract class BaseWorker {
     protected lastTaskPromise: Promise<void> = Promise.resolve();
 
     public abstract readonly priorityCost: number; 
+    protected static prismaClient = new PrismaClient();
 
     constructor(
         name: string, type: 'api' | 'scraper', limits: WorkerLimits, 
@@ -60,6 +61,23 @@ export abstract class BaseWorker {
         this.currentDailyUsage++;
         if (this.limits.monthlyLimit !== -1) this.currentMonthlyUsage++;
         if (this.limits.lifetimeLimit !== -1) this.currentLifetimeUsage++;
+
+        // Persistenza asincrona non bloccante su PostgreSQL
+        BaseWorker.prismaClient.workerStat.upsert({
+            where: { name: this.name },
+            update: {
+                dailyUsage: { increment: 1 },
+                monthlyUsage: { increment: 1 },
+                lifetimeUsage: { increment: 1 }
+            },
+            create: {
+                name: this.name,
+                dailyUsage: 1,
+                monthlyUsage: 1,
+                lifetimeUsage: 1
+            }
+        }).catch(err => console.error(`[WorkerStat] Errore salvataggio statistiche ${this.name}:`, err.message));
+
         return true;
     }
 
@@ -226,6 +244,7 @@ export class ApiWorker extends BaseWorker {
 interface DispatcherProductRecord extends ProductRecord {
     isUserTracked: boolean;
 }
+
 
 export class SmartDispatcher {
     private prisma: PrismaClient;

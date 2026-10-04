@@ -251,6 +251,49 @@ private async handleLongPauses(): Promise<void> {
     }
 }
 
+
+    private extractIsSoldByAmazon($: cheerio.CheerioAPI): boolean {
+        // 1. Cerca specificamente nel container delle informazioni del venditore (Merchant Info)
+        const merchantContainer = $('#merchantInfoFeature_feature_div');
+        if (merchantContainer.length > 0) {
+            // Estrae il testo dell'effettivo messaggio o link del venditore
+            const merchantText = merchantContainer
+                .find('.offer-display-feature-text-message, #sellerProfileTriggerId, .a-size-small')
+                .text()
+                .trim()
+                .toLowerCase();
+
+            // Se il venditore contiene esplicitamente "amazon", è un prodotto 1P
+            if (merchantText.includes('amazon')) {
+                return true;
+            }
+
+            // Se nel blocco merchant c'è del testo diverso (es. "Patriot Memory France"), è un venditore terzo
+            if (merchantText.length > 0) {
+                return false;
+            }
+        }
+
+        // 2. Fallback per layout Amazon alternativi o più vecchi
+        const tabularMerchant = $('#tabular-buybox .tabular-buybox-text[tabular-attribute-name*="merchant"]');
+        if (tabularMerchant.length > 0) {
+            return tabularMerchant.text().toLowerCase().includes('amazon');
+        }
+
+        const merchantInfoLegacy = $('#merchant-info').text().toLowerCase();
+        if (merchantInfoLegacy.length > 0) {
+            // Controlla se è venduto da Amazon (es. "venduto e spedito da amazon", "vendu par amazon", "sold by amazon")
+            const soldByAmazonRegex = /(?:venduto|vendu|sold|verkauft)\s+(?:da|par|by|von)\s+amazon/i;
+            if (soldByAmazonRegex.test(merchantInfoLegacy)) {
+                return true;
+            }
+            // Se dice solo spedito da Amazon ma venduto da altri
+            return false;
+        }
+
+        return false;
+    }
+
     public async performFallbackRegexSearch(mainHtml: string, aodHtml: string | null, task: Task) {
         console.log(`[Scraper - ${this.name}] Generazione file diagnostico unificato per ${task.asin} (${task.market})...`);
 
@@ -485,9 +528,10 @@ private async handleLongPauses(): Promise<void> {
 
             let bestPrice: number | null = null;
             let bestShipping: number | null = null;
+            let bestOfferIsSoldByAmazon: boolean = false; // 1. Variabile per salvare se l'offerta migliore è di Amazon
 
             $aod('#aod-offer, #aod-pinned-offer, #all-offers-display-offer').each((_, element) => {
-                const $offer =$aod(element);
+                const $offer = $aod(element);
 
                 const conditionRaw = $offer.find('#aod-offer-heading, .aod-offer-heading').text().toLowerCase().trim();
                 const isNew = conditionRaw.includes('new') || conditionRaw.includes('nuovo') || conditionRaw.includes('neuf') || conditionRaw.includes('neu');
@@ -512,6 +556,12 @@ private async handleLongPauses(): Promise<void> {
                         const p = parseFloat(clean);
                         if (!isNaN(p)) bestPrice = p;
                     }
+                }
+
+                // 2. QUI: Se abbiamo trovato un prezzo per questa offerta, ne leggiamo il venditore
+                if (bestPrice !== null) {
+                    const sellerText = $offer.find('#aod-offer-soldBy, [id*="soldBy"], .aod-offer-soldBy-text, #aod-offer-shipsFrom').text().toLowerCase();
+                    bestOfferIsSoldByAmazon = sellerText.includes('amazon');
                 }
 
                 // Estrazione Spedizione
@@ -548,6 +598,7 @@ private async handleLongPauses(): Promise<void> {
                 return { result: this.createEmptyResult(task), rawHtml: aodHtml };
             }
 
+            // 3. QUI: Inseriamo isSoldByAmazon nell'oggetto finale restituito
             return {
                 result: {
                     success: true,
@@ -557,7 +608,8 @@ private async handleLongPauses(): Promise<void> {
                         market: task.market,
                         price: bestPrice,
                         shippingCost: bestShipping ?? 0.0,
-                        currency: "EUR"
+                        currency: "EUR",
+                        isSoldByAmazon: bestOfferIsSoldByAmazon
                     }
                 },
                 rawHtml: aodHtml

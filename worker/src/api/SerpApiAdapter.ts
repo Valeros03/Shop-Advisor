@@ -57,6 +57,9 @@ export class SerpApiAdapter implements ApiAdapter {
             }
         }
 
+        const sellerName = product.buybox_winner?.seller?.name || product.seller || "";
+        const isSoldByAmazon = sellerName.toLowerCase().includes("amazon");
+
         return {
             asin,
             market,
@@ -64,7 +67,8 @@ export class SerpApiAdapter implements ApiAdapter {
             shippingCost: shipping,
             currency: "EUR",
             title,
-            imageUrl
-        } as any;
+            imageUrl,
+            isSoldByAmazon
+        };
     }
 }
