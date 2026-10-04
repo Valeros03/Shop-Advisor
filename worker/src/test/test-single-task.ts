@@ -11,7 +11,7 @@ async function runTest() {
     console.log("1. Testing Mock API Adapter...");
     const apiAdapter = new MockApiAdapter();
     const config = apiAdapter.buildRequestConfig(task, "FAKE_KEY");
-    // Simulate fake axios response based on config
+
     const rawResponse = { asin: task.asin, market: task.market, product_results: { extracted_price: 25.99 } };
     const apiData = apiAdapter.extractData(rawResponse);
     console.log("Mock API Result:", apiData);

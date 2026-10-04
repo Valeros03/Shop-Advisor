@@ -5,9 +5,6 @@ import * as path from "path";
 const envPath = path.resolve(__dirname, "../../shop-advisor/.env");
 dotenv.config({ path: envPath });
 
-// 2. Importa il PrismaClient compilato da shop-advisor
-const { PrismaClient } = require(path.resolve(__dirname, "../../shop-advisor/node_modules/@prisma/client"));
-
 import { gotScraping } from "got-scraping";
 import * as cheerio from "cheerio";
 import * as fs from "fs";

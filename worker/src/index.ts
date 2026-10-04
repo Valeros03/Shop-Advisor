@@ -1,8 +1,6 @@
 // index.ts
 import { PrismaClient } from "@prisma/client";
 import { SmartDispatcher } from "./worker";
-import * as path from "path";
-const { PrismaClient } = require(path.resolve(__dirname, "../../shop-advisor/node_modules/@prisma/client"));
 
 const prisma = new PrismaClient();
 const dispatcher = new SmartDispatcher(prisma);

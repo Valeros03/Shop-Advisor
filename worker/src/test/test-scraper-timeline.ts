@@ -67,9 +67,9 @@ async function runTest() {
     });
 
     if (totalTasksScheduled === 15 && noDuplicateMarketsInCluster && isAsinIntervalWide) {
-        console.log("\n✅ Scraper Timeline Test PASS: Raggruppamento atomico e distanziamento inter-ciclo confermati.");
+        console.log("\nScraper Timeline Test PASS: Raggruppamento atomico e distanziamento inter-ciclo confermati.");
     } else {
-        console.error("\n❌ Scraper Timeline Test FAIL.");
+        console.error("\nScraper Timeline Test FAIL.");
     }
 }
 

@@ -49,9 +49,9 @@ async function runTest() {
     const filePath = path.join(dir, `${task.asin}_${task.market}_fallback.xml`);
 
     if (fs.existsSync(filePath)) {
-        console.log(`\n✅ TEST COMPLETATO: File XML generato correttamente in:\n${filePath}`);
+        console.log(`\n TEST COMPLETATO: File XML generato correttamente in:\n${filePath}`);
     } else {
-        console.error(`\n❌ ERRORE: Nessun file XML generato (nessun tag intercettato dalle regex).`);
+        console.error(`\n ERRORE: Nessun file XML generato (nessun tag intercettato dalle regex).`);
     }
 }
 

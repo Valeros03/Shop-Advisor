@@ -3,10 +3,9 @@ import axios from "axios";
 import { PrismaClient } from "@prisma/client";
 import { WorkerFactory } from "./factory/WorkerFactory";
 import { ProductUpdater } from "./Updater";
+import { notifier } from "./service/NotificationService";
 
 import * as path from "path";
-const { PrismaClient } = require(path.resolve(__dirname, "../../shop-advisor/node_modules/@prisma/client"));
-
 // --- 1. BASE WORKER ---
 export abstract class BaseWorker {
     public readonly type: 'api' | 'scraper';
@@ -136,6 +135,7 @@ export class ApiWorker extends BaseWorker {
         }
         return false;
     }
+    
 
     public delegateAndOrganizeTasks(assignedTasks: Task[]): void {
         console.log(`[API - ${this.name}] Pianificazione di ${assignedTasks.length} task lungo la timeline...`);
@@ -155,35 +155,74 @@ export class ApiWorker extends BaseWorker {
         this.timelineQueue.sort((a, b) => a.targetTime - b.targetTime);
     }
 
+    private isPastMidnight(): boolean {
+        const parts = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'Europe/Rome',
+            hour: 'numeric',
+            hour12: false
+        }).formatToParts(new Date());
+        const hour = parseInt(parts.find(p => p.type === 'hour')!.value, 10);
+        return hour >= 0 && hour < 7;
+    }
+
     public async executeDailyMission(updater: ProductUpdater): Promise<void> {
         while (this.timelineQueue.length > 0) {
+            // 1. Controllo limite mezzanotte prima di estrarre il task
+            if (this.isPastMidnight()) {
+                console.warn(`[Scraper - ${this.name}] Mezzanotte raggiunta! Stop a nuovi task.`);
+                
+                // Informa l'updater di tutti i task scartati per non lasciarlo in attesa
+                for (const job of this.timelineQueue) {
+                    updater.cancelPendingTask(job.task.asin, job.task.market, job.task.cycleIndex ?? 0);
+                }
+                this.timelineQueue = [];
+                break;
+            }
+
             const scheduledJob = this.timelineQueue.shift()!;
             
+            // 2. Attesa dello slot temporale programmato
             const msUntilTarget = scheduledJob.targetTime - Date.now();
             if (msUntilTarget > 0) {
                 await new Promise(resolve => setTimeout(resolve, msUntilTarget));
             }
 
+            // 3. Secondo controllo dopo l'attesa (in caso l'attesa abbia superato mezzanotte)
+            if (this.isPastMidnight()) {
+                console.warn(`[Scraper - ${this.name}] Mezzanotte superata durante l'attesa per ${scheduledJob.task.asin}.`);
+                updater.cancelPendingTask(scheduledJob.task.asin, scheduledJob.task.market, scheduledJob.task.cycleIndex ?? 0);
+                
+                for (const job of this.timelineQueue) {
+                    updater.cancelPendingTask(job.task.asin, job.task.market, job.task.cycleIndex ?? 0);
+                }
+                this.timelineQueue = [];
+                break;
+            }
+
+            // 4. Rate limiting organico
             await this.enforceRateLimit();
 
+            // 5. Esecuzione task
             try {
-                const config = this.adapter.buildRequestConfig(scheduledJob.task, this.apiKey);
-                const response = await axios(config);
-                const normalizedData = this.adapter.extractData(response.data);
-
-                await updater.submitResult(scheduledJob.task.asin, scheduledJob.task.market, {
-                    success: true, timestamp: new Date(), data: normalizedData 
-                });
-            } catch (error: any) {
+                const result = await this.scraper.scrape(scheduledJob.task);
                 await updater.submitResult(
-                    task.asin, 
-                    task.market, 
+                    scheduledJob.task.asin, 
+                    scheduledJob.task.market, 
                     result, 
-                    task.cycleIndex ?? 0
+                    scheduledJob.task.cycleIndex ?? 0
+                );
+            } catch (error: any) {
+                console.error(`[Scraper - ${this.name}] Fallimento task ${scheduledJob.task.asin} (${scheduledJob.task.market}):`, error.message);
+                
+                await updater.submitResult(
+                    scheduledJob.task.asin, 
+                    scheduledJob.task.market, 
+                    { success: false, error: error.message, timestamp: new Date() }, 
+                    scheduledJob.task.cycleIndex ?? 0
                 );
             }
         }
-        console.log(`[API - ${this.name}] 🏁 Chiusura ciclo giornaliero.`);
+        console.log(`[Scraper - ${this.name}] Chiusura ciclo giornaliero.`);
     }
 }
 
@@ -197,6 +236,7 @@ export class SmartDispatcher {
     private updater: ProductUpdater;
     private workers: BaseWorker[] = [];
     private MARKETS: AmazonMarket[] = ["amazon.it", "amazon.fr", "amazon.de"];
+    private consecutiveFailures: number = 0;
 
     constructor(prisma: PrismaClient) {
         this.prisma = prisma;
@@ -208,9 +248,19 @@ export class SmartDispatcher {
     }
 
     public async healthCheck(): Promise<boolean> {
-        try { await this.prisma.$queryRaw`SELECT 1`; } 
-        catch { return false; }
-        return this.workers.length > 0;
+        try { 
+            await this.prisma.$queryRaw`SELECT 1`;
+            return this.workers.length > 0;
+        } catch (dbError: any) { 
+            console.error("[Dispatcher] Database PostgreSQL non raggiungibile:", dbError.message);
+            await notifier.sendAlert(
+                "DATABASE DOWN: Connessione PostgreSQL Fallita",
+                `Il Dispatcher non riesce a dialogare con il database PostgreSQL Docker.\n\n` +
+                `- Errore: ${dbError.message}\n` +
+                `- Verificare che il container "shopadvisor-db" sia avviato e integro.`
+            );
+            return false; 
+        }
     }
 
     private simulateGlobalThroughput(): number {
@@ -251,7 +301,7 @@ export class SmartDispatcher {
             }
         }
         
-        console.log(`[Dispatcher] 🎯 Capacità Massima calcolata: ${maxCycles} Cicli Completi.`);
+        console.log(`[Dispatcher] Capacità Massima calcolata: ${maxCycles} Cicli Completi.`);
         return maxCycles;
     }
 
@@ -268,26 +318,70 @@ export class SmartDispatcher {
 
     public async planDailyTasks(products: DispatcherProductRecord[], maxCycles: number): Promise<Task[]> {
         let plannedUpdates: { product: DispatcherProductRecord; updatesCount: number }[] = [];
-        const today = new Date();
+        const now = Date.now();
 
         for (const p of products) {
             let updatesToday = 0;
-            const daysSinceUpdate = Math.floor((today.getTime() - p.lastUpdated.getTime()) / (1000 * 3600 * 24));
+            const msSinceUpdate = now - p.lastUpdated.getTime();
+            const hoursSinceUpdate = msSinceUpdate / (1000 * 3600);
 
+            // Se il prodotto è marcato per recupero forzato da ieri
             if (p.mustTomorrow) {
                 updatesToday = 1;
             } else {
                 switch (p.priorityCode) {
-                    case 1: updatesToday = 4; break;
-                    case 2: updatesToday = 2; break;
-                    case 3: if (daysSinceUpdate >= 1) updatesToday = 1; break;
-                    case 4: if (daysSinceUpdate >= 2) updatesToday = 1; break;
-                    case 5: if (daysSinceUpdate >= 5) updatesToday = 1; break;
-                    case 6: if (daysSinceUpdate >= 7) updatesToday = 1; break;
-                    case 7: if (daysSinceUpdate >= 12) updatesToday = 1; break;
+                    case 1:
+                        // Priorità 1: 4 volte al giorno (ogni ~6h). 
+                        // Se è stato aggiornato da poco, pianifica solo gli slot residui
+                        if (hoursSinceUpdate >= 18) updatesToday = 4;
+                        else if (hoursSinceUpdate >= 12) updatesToday = 3;
+                        else if (hoursSinceUpdate >= 6) updatesToday = 2;
+                        else updatesToday = 1;
+                        break;
+
+                    case 2:
+                        // Priorità 2: 2 volte al giorno (ogni ~12h)
+                        if (hoursSinceUpdate >= 12) updatesToday = 2;
+                        else updatesToday = 1;
+                        break;
+
+                    case 3:
+                        // Priorità 3 (1 volta ogni 24h):
+                        // Se è già stato scansionato nelle ultime 24 ore, NON va pianificato oggi!
+                        if (hoursSinceUpdate >= 24) {
+                            updatesToday = 1;
+                        } else {
+                            const hoursRemaining = (24 - hoursSinceUpdate).toFixed(1);
+                            console.log(`[Dispatcher] Salto ASIN ${p.asin} (Priorità 3): già aggiornato ${hoursSinceUpdate.toFixed(1)}h fa. Prossimo ciclo tra ${hoursRemaining}h.`);
+                        }
+                        break;
+
+                    case 4:
+                        if (hoursSinceUpdate >= 48) updatesToday = 1;
+                        break;
+
+                    case 5:
+                        if (hoursSinceUpdate >= 120) updatesToday = 1;
+                        break;
+
+                    case 6:
+                        if (hoursSinceUpdate >= 168) updatesToday = 1;
+                        break;
+
+                    case 7:
+                        if (hoursSinceUpdate >= 288) updatesToday = 1;
+                        break;
                 }
             }
-            if (updatesToday > 0) plannedUpdates.push({ product: p, updatesCount: updatesToday });
+
+            if (updatesToday > 0) {
+                plannedUpdates.push({ product: p, updatesCount: updatesToday });
+            }
+        }
+
+        if (plannedUpdates.length === 0) {
+            console.log("[Dispatcher] Nessun prodotto da aggiornare nelle ore correnti. Il catalogo è già sincronizzato.");
+            return [];
         }
 
         return await this.applyLoadShedding(plannedUpdates, maxCycles);
@@ -298,7 +392,7 @@ export class SmartDispatcher {
         let totalCyclesRequested = initialRequested;
         let tasksToMarkMustTomorrow: string[] = [];
 
-        console.log(`\n[Load Shedding] 📊 Inizio bilanciamento carico:`);
+        console.log(`\n[Load Shedding] Inizio bilanciamento carico:`);
         console.log(`- Capacità massima (maxCycles): ${maxCycles} cicli completi (${maxCycles * 3} task atomici)`);
         console.log(`- Richiesta iniziale: ${totalCyclesRequested} cicli (${totalCyclesRequested * 3} task atomici) da ${planned.length} prodotti.`);
 
@@ -345,7 +439,7 @@ export class SmartDispatcher {
                 }
             }
             if (backfilledCycles > 0) {
-                console.log(`- [Fase C - Ottimizzazione] 🎯 Recuperati ${backfilledCycles} slot liberi.`);
+                console.log(`- [Fase C - Ottimizzazione] Recuperati ${backfilledCycles} slot liberi.`);
             }
         }
 
@@ -359,12 +453,11 @@ export class SmartDispatcher {
         }
 
         // --- FASE D: CALCOLO DELLE 4 MACRO-ONDATE GLOBALI & INTERLEAVING ---
-        const now = Date.now();
-        const midnight = new Date();
-        midnight.setHours(23, 59, 59, 999);
-        const totalWindowMs = Math.max(midnight.getTime() - now, 60000);
+        const { now } = this.getItalianTime();
+        const midnightItalian = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
+        midnightItalian.setHours(24, 0, 0, 0);
 
-        // Definiamo 4 Macro-Fasce orarie costanti
+        const totalWindowMs = Math.max(midnightItalian.getTime() - now.getTime(), 60000);
         const NUM_WAVES = 4;
         const waveDurationMs = totalWindowMs / NUM_WAVES;
 
@@ -375,21 +468,29 @@ export class SmartDispatcher {
 
         for (const p of planned) {
             if (p.updatesCount <= 0) continue;
-            this.updater.registerExpectation(item.asin, this.MARKETS, item.cycleIndex);
+
+            const asin = p.product.asin;
+            const isMustTomorrow = p.product.mustTomorrow;
 
             if (p.updatesCount === 4) {
-                // Un ciclo per ciascuna delle 4 fasce
-                for (let c = 0; c < 4; c++) waveBuckets[c].push({ asin: p.product.asin, isMustTomorrow: p.product.mustTomorrow, cycleIndex: c });
+                for (let c = 0; c < 4; c++) {
+                    this.updater.registerExpectation(asin, this.MARKETS, c);
+                    waveBuckets[c].push({ asin, isMustTomorrow, cycleIndex: c });
+                }
             } else if (p.updatesCount === 3) {
-                // Fasce 0, 1 e 3 (distanziate)
-                [0, 1, 3].forEach((w, cIdx) => waveBuckets[w].push({ asin: p.product.asin, isMustTomorrow: p.product.mustTomorrow, cycleIndex: cIdx }));
+                [0, 1, 3].forEach((w, cIdx) => {
+                    this.updater.registerExpectation(asin, this.MARKETS, cIdx);
+                    waveBuckets[w].push({ asin, isMustTomorrow, cycleIndex: cIdx });
+                });
             } else if (p.updatesCount === 2) {
-                // Fasce 0 e 2 (mattina/pomeriggio e sera)
-                [0, 2].forEach((w, cIdx) => waveBuckets[w].push({ asin: p.product.asin, isMustTomorrow: p.product.mustTomorrow, cycleIndex: cIdx }));
+                [0, 2].forEach((w, cIdx) => {
+                    this.updater.registerExpectation(asin, this.MARKETS, cIdx);
+                    waveBuckets[w].push({ asin, isMustTomorrow, cycleIndex: cIdx });
+                });
             } else if (p.updatesCount === 1) {
-                // INTERLEAVING: Distribuisce i prodotti a singolo ciclo equamente nelle 4 fasce
                 const targetWave = singleUpdateCounter % NUM_WAVES;
-                waveBuckets[targetWave].push({ asin: p.product.asin, isMustTomorrow: p.product.mustTomorrow, cycleIndex: 0 });
+                this.updater.registerExpectation(asin, this.MARKETS, 0);
+                waveBuckets[targetWave].push({ asin, isMustTomorrow, cycleIndex: 0 });
                 singleUpdateCounter++;
             }
         }
@@ -432,52 +533,131 @@ export class SmartDispatcher {
         return eligibleWorkers[0];
     }
 
+    // Helper per determinare gli orari precisi sul fuso italiano
+    private getItalianTime(): { hour: number; now: Date } {
+        const now = new Date();
+        const italianHourStr = new Intl.DateTimeFormat('it-IT', {
+            timeZone: 'Europe/Rome',
+            hour: 'numeric',
+            hour12: false
+        }).format(now);
+        return { hour: parseInt(italianHourStr, 10), now };
+    }
+
     public async run(): Promise<void> {
-        console.log("[Dispatcher] 🚀 Avvio pianificazione giornaliera...");
+        console.log("[Dispatcher] Servizio di monitoraggio avviato in modalità continua (24/7)...");
 
         const loadedWorkers = await (await import("./factory/WorkerFactory")).WorkerFactory.loadAllWorkers();
         loadedWorkers.forEach(w => { if (!this.workers.some(existing => existing.name === w.name)) { this.registerWorker(w); } });
 
-        if (!(await this.healthCheck())) return;
+        // LOOP INFINITO PRINCIPALE DEL DISPATCHER
+        while (true) {
+            try {
+                const { hour, now } = this.getItalianTime();
 
-        const maxCyclesToday = this.simulateGlobalThroughput();
+                // 1. FASCIA NOTTURNA (00:00 - 07:00)
+                // Se siamo tra mezzanotte e le 7 del mattino, pausa fino alle 07:00
+                if (hour >= 0 && hour < 7) {
+                    const next7AM = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
+                    next7AM.setHours(7, 0, 0, 0);
 
-        const rawProducts = await this.prisma.product.findMany({
-            select: {
-                id: true, asin: true, priorityCode: true, mustTomorrow: true, lastUpdated: true,
-                _count: { select: { alerts: { where: { isActive: true } } } }
-            }
-        });
+                    const sleepMs = Math.max(10000, next7AM.getTime() - now.getTime());
+                    const hoursLeft = (sleepMs / (1000 * 60 * 60)).toFixed(1);
 
-        const products: DispatcherProductRecord[] = rawProducts.map(p => ({
-            id: p.id, asin: p.asin, priorityCode: p.priorityCode, mustTomorrow: p.mustTomorrow,
-            lastUpdated: p.lastUpdated, isUserTracked: p._count.alerts > 0
-        }));
+                    console.log(`\n[Dispatcher] Finestra notturna (ore ${hour}:00). Riposo fino alle 07:00 (~${hoursLeft}h)...`);
+                    await new Promise(resolve => setTimeout(resolve, sleepMs));
+                    console.log(`[Dispatcher] Ore 07:00 raggiunte. Inizio preparazione della giornata operativa!`);
+                    continue;
+                }
 
-        const tasks = await this.planDailyTasks(products, maxCyclesToday);
+                // 2. VERIFICA HEALTH CHECK
+                if (!(await this.healthCheck())) {
+                    console.error("[Dispatcher] Health check fallito. Riprovo tra 60 secondi...");
+                    await new Promise(resolve => setTimeout(resolve, 60000));
+                    continue;
+                }
 
-        const taskMap = new Map<BaseWorker, Task[]>();
-        for (const w of this.workers) taskMap.set(w, []);
+                // 3. PIANIFICAZIONE GIORNALIERA (ore 07:00)
+                console.log(`\n[Dispatcher] Pianificazione giornaliera delle scansioni (ore ${hour}:00)...`);
+                const maxCyclesToday = this.simulateGlobalThroughput();
 
-        for (const task of tasks) {
-            const worker = this.selectWorkerForTask(task);
-            if (worker && worker.reserveCapacity()) {
-                taskMap.get(worker)!.push(task);
-            } else {
-                console.warn(`[Dispatcher] ⚠️ Impossibile allocare il task ${task.asin} su ${task.market}. (Le capacità reali non combaciano con la simulazione)`);
+                const rawProducts = await this.prisma.product.findMany({
+                    select: {
+                        id: true, asin: true, priorityCode: true, mustTomorrow: true, lastUpdated: true,
+                        _count: { select: { alerts: { where: { isActive: true } } } }
+                    }
+                });
+
+                const products: DispatcherProductRecord[] = rawProducts.map(p => ({
+                    id: p.id, asin: p.asin, priorityCode: p.priorityCode, mustTomorrow: p.mustTomorrow,
+                    lastUpdated: p.lastUpdated, isUserTracked: p._count.alerts > 0
+                }));
+
+                const tasks = await this.planDailyTasks(products, maxCyclesToday);
+
+                const taskMap = new Map<BaseWorker, Task[]>();
+                for (const w of this.workers) taskMap.set(w, []);
+
+                for (const task of tasks) {
+                    const worker = this.selectWorkerForTask(task);
+                    if (worker && worker.reserveCapacity()) {
+                        taskMap.get(worker)!.push(task);
+                    }
+                }
+
+                const missionPromises = [];
+                for (const [worker, assignedTasks] of taskMap.entries()) {
+                    if (assignedTasks.length > 0) {
+                        worker.delegateAndOrganizeTasks(assignedTasks);
+                        missionPromises.push(worker.executeDailyMission(this.updater));
+                    }
+                }
+
+                // 4. ESECUZIONE DELLA GIORNATA
+                if (missionPromises.length > 0) {
+                    await Promise.all(missionPromises);
+                    await this.updater.flushPartialUpdates();
+                    console.log("[Dispatcher] 🌌 Tutte le scansioni previste per oggi sono state completate.");
+                } else {
+                    console.log("[Dispatcher] ☕ Nessun task da eseguire per la giornata odierna.");
+                }
+
+                // 5. FINESTRA DI TREGUA (15 minuti dopo la mezzanotte: fino alle 00:15)
+                const { now: currentTime, hour: currentH } = this.getItalianTime();
+                const truceTarget = new Date(currentTime.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
+
+                if (currentH >= 7) {
+                    // Siamo di giorno/sera: puntiamo alle 00:15 della notte successiva
+                    truceTarget.setHours(24, 15, 0, 0);
+                } else {
+                    // È già passata la mezzanotte (00:00 - 00:14): puntiamo alle 00:15 attuali
+                    truceTarget.setHours(0, 15, 0, 0);
+                }
+
+                const msUntilTruceEnd = truceTarget.getTime() - currentTime.getTime();
+                if (msUntilTruceEnd > 0) {
+                    const minutesWait = (msUntilTruceEnd / (1000 * 60)).toFixed(1);
+                    console.log(`[Dispatcher] Finestra operativa conclusa. Tregua di sicurezza attiva fino alle 00:15 (~${minutesWait} min)...`);
+                    await new Promise(resolve => setTimeout(resolve, msUntilTruceEnd));
+                }
+
+                console.log("[Dispatcher] Tregua completata. Il ciclo ripassa alla sospensione notturna.");
+             
+            } catch (err: any) {
+                this.consecutiveFailures++;
+                console.error(`[Dispatcher] Errore critico nel loop giornaliero (Fallimento #${this.consecutiveFailures}):`, err.message);
+
+                if (this.consecutiveFailures >= 3) {
+                    await notifier.sendAlert(
+                        "DISPATCHER IN CRASH-LOOP!",
+                        `Il Dispatcher principale ha subito ${this.consecutiveFailures} crash consecutivi.\n\n` +
+                        `- Ultimo Errore: ${err.message}\n` +
+                        `- Stack Trace:\n${err.stack?.slice(0, 1000)}`
+                    );
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 30000));
             }
         }
-
-        const missionPromises = [];
-        for (const [worker, assignedTasks] of taskMap.entries()) {
-            if (assignedTasks.length > 0) {
-                worker.delegateAndOrganizeTasks(assignedTasks);
-                missionPromises.push(worker.executeDailyMission(this.updater));
-            }
-        }
-
-        await Promise.all(missionPromises);
-        await this.updater.flushPartialUpdates();
-        console.log("[Dispatcher] 🌌 Giornata completata con successo.");
     }
 }

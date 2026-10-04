@@ -2,7 +2,7 @@
 import { PrismaClient } from "@prisma/client";
 import { NormalizedProduct, WorkerResult, AmazonMarket } from "./types";
 import * as path from "path";
-const { PrismaClient } = require(path.resolve(__dirname, "../../shop-advisor/node_modules/@prisma/client"));
+import { telegramNotifier } from "./service/TelegramNotificationService";
 
 interface ResultEntry {
     data: NormalizedProduct;
@@ -82,6 +82,14 @@ export class ProductUpdater {
         }
     }
 
+    public cancelPendingTask(asin: string, market: string, cycleIndex: number = 0): void {
+        const key = this.getKey(asin, cycleIndex);
+        const entry = this.pendingUpdates.get(key);
+        if (entry) {
+            entry.failedMarkets.add(market);
+        }
+    }
+
     private calculateLandedCost(product: NormalizedProduct): number | null {
         if (product.price === null) return null;
 
@@ -102,6 +110,7 @@ export class ProductUpdater {
             where: { asin },
             select: { 
                 id: true,
+                name: true,
                 currentPriceIT: true, currentPriceFR: true, currentPriceDE: true,
                 historyIT: true, historyFR: true, historyDE: true,
                 priorityCode: true, unchangedCount: true,
@@ -118,7 +127,6 @@ export class ProductUpdater {
         const frLandedCost = frEntry ? this.calculateLandedCost(frEntry.data) : undefined;
         const deLandedCost = deEntry ? this.calculateLandedCost(deEntry.data) : undefined;
 
-        // Verifica variazioni di prezzo
         const changedIT = itLandedCost !== undefined && itLandedCost !== currentProduct.currentPriceIT;
         const changedFR = frLandedCost !== undefined && frLandedCost !== currentProduct.currentPriceFR;
         const changedDE = deLandedCost !== undefined && deLandedCost !== currentProduct.currentPriceDE;
@@ -127,18 +135,26 @@ export class ProductUpdater {
         let newPriority = currentProduct.priorityCode;
         let newUnchangedCount = currentProduct.unchangedCount;
         const isTrackedByUser = currentProduct._count.alerts > 0;
-        const maxDemotion = isTrackedByUser ? 3 : 7; 
+
+        // Limite massimo di declassamento (7 se non tracciato, 3 se tracciato da utenti)
+        const maxDemotion = isTrackedByUser ? 3 : 7;
 
         if (isPriceChanged) {
-            newPriority = Math.max(1, currentProduct.priorityCode - 1);
             newUnchangedCount = 0;
-            console.log(`[Updater] 🚀 Promozione per ${asin}! Priorità: ${newPriority}`);
+            // REGOLA: Promozione a priorità 2 o 1 consentita SOLO se monitorato da utenti
+            if (isTrackedByUser) {
+                newPriority = Math.max(1, currentProduct.priorityCode - 1);
+                console.log(`[Updater] Prodotto tracciato ${asin} promosso a priorità ${newPriority}`);
+            } else {
+                newPriority = Math.max(3, currentProduct.priorityCode - 1);
+                console.log(`[Updater] Cambio prezzo rilevato per ${asin} (non tracciato). Priorità vincolata: ${newPriority}`);
+            }
         } else {
             newUnchangedCount += 1;
             if (newUnchangedCount >= 3) {
                 newPriority = Math.min(maxDemotion, currentProduct.priorityCode + 1);
                 newUnchangedCount = 0; 
-                console.log(`[Updater] 📉 Declassamento per ${asin}. Priorità: ${newPriority}`);
+                console.log(`[Updater] Declassamento per ${asin}. Nuova priorità: ${newPriority}`);
             }
         }
 
@@ -176,29 +192,87 @@ export class ProductUpdater {
             }
         });
 
-        console.log(`[Updater] ✅ ASIN ${asin} consolidato nel database.`);
+        console.log(`[Updater] ASIN ${asin} consolidato nel database.`);
 
-        // Controllo Trigger Alert Utenti se il prezzo migliore tra i 3 mercati scende
-        const validPrices = [itLandedCost, frLandedCost, deLandedCost].filter((p): p is number => typeof p === 'number');
-        if (validPrices.length > 0) {
-            const bestCurrentPrice = Math.min(...validPrices);
-            await this.checkAndTriggerAlerts(currentProduct.id, asin, bestCurrentPrice);
+        // 3. Prepariamo tutti i prezzi validi correnti (usando il valore appena estratto o l'ultimo presente nel DB)
+        const marketPrices: { market: string; price: number }[] = [];
+
+        const finalIT = itLandedCost !== undefined ? itLandedCost : currentProduct.currentPriceIT;
+        const finalFR = frLandedCost !== undefined ? frLandedCost : currentProduct.currentPriceFR;
+        const finalDE = deLandedCost !== undefined ? deLandedCost : currentProduct.currentPriceDE;
+
+        if (typeof finalIT === 'number' && finalIT > 0) marketPrices.push({ market: 'amazon.it', price: finalIT });
+        if (typeof finalFR === 'number' && finalFR > 0) marketPrices.push({ market: 'amazon.fr', price: finalFR });
+        if (typeof finalDE === 'number' && finalDE > 0) marketPrices.push({ market: 'amazon.de', price: finalDE });
+
+        // Se abbiamo almeno un mercato con prezzo valido, eseguiamo la notifica degli alert
+        if (marketPrices.length > 0) {
+            await this.checkAndTriggerAlerts(
+                currentProduct.id, 
+                asin, 
+                currentProduct.name || `Prodotto ${asin}`, 
+                currentProduct.image,
+                marketPrices
+            );
         }
     }
 
-    private async checkAndTriggerAlerts(productId: string, asin: string, lowestPrice: number): Promise<void> {
+    private async checkAndTriggerAlerts(
+        productId: string, 
+        asin: string, 
+        productName: string, 
+        imageUrl: string,
+        marketPrices: { market: string; price: number }[]
+    ): Promise<void> {
         try {
+            // Troviamo il prezzo minimo assoluto
+            const absoluteLowest = Math.min(...marketPrices.map(m => m.price));
+
             const triggeredAlerts = await this.prisma.alert.findMany({
                 where: {
                     productId,
                     isActive: true,
-                    targetPrice: { gte: lowestPrice }
+                    targetPrice: { gte: absoluteLowest }
                 },
                 include: { user: true }
             });
 
+            if (triggeredAlerts.length === 0) return;
+
+            console.log(`[Updater] 🎯 Trovati ${triggeredAlerts.length} alert da notificare per ASIN ${asin}`);
+
             for (const alert of triggeredAlerts) {
-                console.log(`[ALERT TRIGGERED] 🔔 Utente ${alert.user.telegramId} per ASIN ${asin}: Prezzo ${lowestPrice}€ <= Target ${alert.targetPrice}€`);
+                // Filtra solo i mercati che rispettano il target di questo utente
+                const qualifying = marketPrices.filter(m => m.price <= alert.targetPrice);
+                if (qualifying.length === 0) continue;
+
+                // Ordina dal più conveniente al più costoso
+                qualifying.sort((a, b) => a.price - b.price);
+                const bestMarketEntry = qualifying[0];
+
+                const telegramIdStr = alert.user.telegramId.toString();
+
+                const sent = await telegramNotifier.sendPriceAlert({
+                    telegramId: telegramIdStr,
+                    productName: productName,
+                    asin: asin,
+                    targetPrice: alert.targetPrice,
+                    bestPrice: bestMarketEntry.price,
+                    bestMarket: bestMarketEntry.market,
+                    qualifyingMarkets: qualifying,
+                    imageUrl: imageUrl
+                });
+
+                if (sent) {
+                    // One-Shot: disattiva l'alert per evitare di ripeterlo nei controlli successivi
+                    await this.prisma.alert.update({
+                        where: { id: alert.id },
+                        data: { isActive: false }
+                    });
+                }
+
+                // Pausa di rispetto rate-limit Telegram
+                await new Promise(resolve => setTimeout(resolve, 60));
             }
         } catch (e: any) {
             console.error(`[Updater] Errore verifica alerts per ${asin}:`, e.message);
@@ -214,11 +288,42 @@ export class ProductUpdater {
     }
 
     public async flushPartialUpdates(): Promise<void> {
-        for (const [_, state] of this.pendingUpdates.entries()) {
+        console.log(`[Updater] 🧹 Consolidamento finale richieste parziali (${this.pendingUpdates.size} in sospeso)...`);
+        
+        const incompleteAsins = new Set<string>();
+
+        for (const [key, state] of this.pendingUpdates.entries()) {
             if (state.results.size > 0) {
+                // Abbiamo almeno un mercato valido: consolidiamo i dati raccolti
                 await this.commitProductUpdate(state.asin, Array.from(state.results.values()));
+            } else {
+                // Nessun mercato valido registrato in questo ciclo interrotto
+                incompleteAsins.add(state.asin);
             }
         }
         this.pendingUpdates.clear();
+
+        // Controllo selettivo: imposta mustTomorrow SOLO se non è stato mai aggiornato oggi
+        if (incompleteAsins.size > 0) {
+            const todayStart = new Date();
+            todayStart.setHours(0, 0, 0, 0);
+
+            const productsWithoutTodayUpdate = await this.prisma.product.findMany({
+                where: {
+                    asin: { in: Array.from(incompleteAsins) },
+                    OR: [
+                        { lastUpdated: null },
+                        { lastUpdated: { lt: todayStart } }
+                    ]
+                },
+                select: { asin: true }
+            });
+
+            const asinsToFlag = productsWithoutTodayUpdate.map(p => p.asin);
+            if (asinsToFlag.length > 0) {
+                console.warn(`[Updater] 📌 ${asinsToFlag.length} prodotti privi di aggiornamenti odierni segnati con mustTomorrow: true`);
+                await this.markDeferredAsins(asinsToFlag);
+            }
+        }
     }
 }

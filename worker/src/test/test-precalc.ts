@@ -56,11 +56,11 @@ async function runTest() {
 
     // 4. Simulazione Throughput (Nessun parametro richiesto)
     const maxCycles = (dispatcher as any).simulateGlobalThroughput();
-    console.log(`\n[Test] 🎯 Cicli completi massimi calcolati (maxCycles): ${maxCycles}`);
+    console.log(`\n[Test]Cicli completi massimi calcolati (maxCycles): ${maxCycles}`);
 
     // 5. Pianificazione Task: si passa maxCycles (NON moltiplicato per 3!)
     const tasks = await dispatcher.planDailyTasks(dispatcherProducts, maxCycles);
-    console.log(`[Test] 📋 Totale Task atomici pianificati: ${tasks.length}`);
+    console.log(`[Test]Totale Task atomici pianificati: ${tasks.length}`);
 
     // 6. Asserzioni di correttezza
     const maxAllowedTasks = maxCycles * 3;
@@ -74,9 +74,9 @@ async function runTest() {
     console.log(`- Rispetto tetto massimo: ${isWithinBudget ? "OK" : "FAIL"} (${tasks.length} <= ${maxAllowedTasks})`);
 
     if (hasGeneratedTasks && isMultipleOfThree && isWithinBudget) {
-        console.log("\n✅ Precalc test PASSED con successo!");
+        console.log("\nPrecalc test PASSED con successo!");
     } else {
-        console.error("\n❌ Precalc test FAILED: anomalie nella pianificazione dei task.");
+        console.error("\nPrecalc test FAILED: anomalie nella pianificazione dei task.");
     }
 
     await prisma.$disconnect();
