@@ -9,7 +9,7 @@ export class SerpApiAdapter implements ApiAdapter {
                 engine: "amazon_product",
                 asin: task.asin,
                 amazon_domain: task.market,
-                shipping_location: "it", // Corretto secondo specifica SerpApi
+                shipping_location: "it",
                 api_key: apiKey,
                 no_cache: true
             }
@@ -57,9 +57,6 @@ export class SerpApiAdapter implements ApiAdapter {
             }
         }
 
-        const sellerName = product.buybox_winner?.seller?.name || product.seller || "";
-        const isSoldByAmazon = sellerName.toLowerCase().includes("amazon");
-
         return {
             asin,
             market,
@@ -67,8 +64,7 @@ export class SerpApiAdapter implements ApiAdapter {
             shippingCost: shipping,
             currency: "EUR",
             title,
-            imageUrl,
-            isSoldByAmazon
+            imageUrl
         };
     }
 }

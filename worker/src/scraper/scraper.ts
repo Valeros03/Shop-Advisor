@@ -28,6 +28,7 @@ export class CustomScraperWorker extends BaseWorker {
     private cookieJar: CookieJar;
     private longPausesDone: number = 0;
     private timelineQueue: ScheduledCluster[] = [];
+    private warmedMarkets: Set<string> = new Set();
 
     constructor(
         name: string, 
@@ -37,6 +38,33 @@ export class CustomScraperWorker extends BaseWorker {
     ) {
         super(name, 'scraper', limits, supportedMarkets, initialUsage);
         this.cookieJar = new CookieJar();
+    }
+
+    private async warmUpSession(market: AmazonMarket): Promise<void> {
+        if (this.warmedMarkets.has(market)) return;
+
+        try {
+            console.log(`[Scraper - ${this.name}] Preriscaldamento sessione per ${market}...`);
+            await gotScraping({
+                url: `https://www.${market}/`,
+                http2: true,
+                cookieJar: this.cookieJar,
+                headers: {
+                    'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'accept-language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'upgrade-insecure-requests': '1',
+                    'sec-fetch-dest': 'document',
+                    'sec-fetch-mode': 'navigate',
+                    'sec-fetch-site': 'none',
+                    'sec-fetch-user': '?1'
+                }
+            });
+            this.warmedMarkets.add(market);
+            // Breve pausa naturale dopo la visita alla homepage
+            await this.sleep(Math.random() * 2 + 1.5);
+        } catch (err: any) {
+            console.warn(`[Scraper - ${this.name}] Warm-up fallito su ${market}:`, err.message);
+        }
     }
 
     private isPastMidnight(): boolean {
@@ -151,13 +179,14 @@ export class CustomScraperWorker extends BaseWorker {
     // =====================================================================
     public async executeDailyMission(updater: ProductUpdater): Promise<void> {
         while (this.timelineQueue.length > 0) {
-            // 1. Controllo limite mezzanotte prima di estrarre il task
+            // 1. Controllo limite notturno prima di estrarre il cluster
             if (this.isPastMidnight()) {
-                console.warn(`[Scraper - ${this.name}] Mezzanotte raggiunta! Stop a nuovi task.`);
+                console.warn(`[Scraper - ${this.name}] Finestra notturna raggiunta! Annullamento cluster rimanenti.`);
                 
-                // Informa l'updater di tutti i task scartati per non lasciarlo in attesa
                 for (const job of this.timelineQueue) {
-                    updater.cancelPendingTask(job.task.asin, job.task.market, job.task.cycleIndex ?? 0);
+                    for (const task of job.cluster.tasks) {
+                        updater.cancelPendingTask(task.asin, task.market, task.cycleIndex ?? 0);
+                    }
                 }
                 this.timelineQueue = [];
                 break;
@@ -165,45 +194,55 @@ export class CustomScraperWorker extends BaseWorker {
 
             const scheduledJob = this.timelineQueue.shift()!;
             
-            // 2. Attesa dello slot temporale programmato
+            // 2. Attesa dello slot temporale programmato per il cluster
             const msUntilTarget = scheduledJob.targetTime - Date.now();
             if (msUntilTarget > 0) {
                 await new Promise(resolve => setTimeout(resolve, msUntilTarget));
             }
 
-            // 3. Secondo controllo dopo l'attesa (in caso l'attesa abbia superato mezzanotte)
+            // 3. Controllo dopo l'attesa
             if (this.isPastMidnight()) {
-                console.warn(`[Scraper - ${this.name}] Mezzanotte superata durante l'attesa per ${scheduledJob.task.asin}.`);
-                updater.cancelPendingTask(scheduledJob.task.asin, scheduledJob.task.market, scheduledJob.task.cycleIndex ?? 0);
-                
+                console.warn(`[Scraper - ${this.name}] Finestra notturna superata durante l'attesa per ${scheduledJob.cluster.asin}.`);
+                for (const task of scheduledJob.cluster.tasks) {
+                    updater.cancelPendingTask(task.asin, task.market, task.cycleIndex ?? 0);
+                }
                 for (const job of this.timelineQueue) {
-                    updater.cancelPendingTask(job.task.asin, job.task.market, job.task.cycleIndex ?? 0);
+                    for (const task of job.cluster.tasks) {
+                        updater.cancelPendingTask(task.asin, task.market, task.cycleIndex ?? 0);
+                    }
                 }
                 this.timelineQueue = [];
                 break;
             }
 
-            // 4. Rate limiting organico
-            await this.enforceRateLimit();
-
-            // 5. Esecuzione task
-            try {
-                const result = await this.scraper.scrape(scheduledJob.task);
-                await updater.submitResult(
-                    scheduledJob.task.asin, 
-                    scheduledJob.task.market, 
-                    result, 
-                    scheduledJob.task.cycleIndex ?? 0
-                );
-            } catch (error: any) {
-                console.error(`[Scraper - ${this.name}] Fallimento task ${scheduledJob.task.asin} (${scheduledJob.task.market}):`, error.message);
+            // 4. Esecuzione dei task appartenenti al cluster (i vari mercati dello stesso ASIN)
+            for (let i = 0; i < scheduledJob.cluster.tasks.length; i++) {
+                const task = scheduledJob.cluster.tasks[i];
                 
-                await updater.submitResult(
-                    scheduledJob.task.asin, 
-                    scheduledJob.task.market, 
-                    { success: false, error: error.message, timestamp: new Date() }, 
-                    scheduledJob.task.cycleIndex ?? 0
-                );
+                // Micropausa tra mercati dello stesso ASIN (evita burst istantanei)
+                if (i > 0) {
+                    const microPause = (Math.random() * 4 + 6); // 6-10s
+                    await new Promise(resolve => setTimeout(resolve, microPause * 1000));
+                }
+
+                try {
+                    const result = await this.scrapeSingleMarket(task);
+                    await updater.submitResult(
+                        task.asin, 
+                        task.market, 
+                        result, 
+                        task.cycleIndex ?? 0
+                    );
+                } catch (error: any) {
+                    console.error(`[Scraper - ${this.name}] Fallimento task ${task.asin} (${task.market}):`, error.message);
+                    
+                    await updater.submitResult(
+                        task.asin, 
+                        task.market, 
+                        { success: false, error: error.message, timestamp: new Date() }, 
+                        task.cycleIndex ?? 0
+                    );
+                }
             }
         }
         console.log(`[Scraper - ${this.name}] Chiusura ciclo giornaliero.`);
@@ -459,16 +498,29 @@ private async handleLongPauses(): Promise<void> {
             
             const $ = cheerio.load(html);
 
-            if ($('title').text().includes('Robot Check') || $('form[action*="validateCaptcha"]').length > 0) {
+            const pageTitle = $('title').text().trim();
+            const hasCaptchaForm = $('form[action*="validateCaptcha"]').length > 0;
+            const isRobotTitle = pageTitle.toLowerCase().includes('robot check');
+
+            if (isRobotTitle || hasCaptchaForm) {
+                // SALVATAGGIO PROVA HTML
+                const debugDir = path.resolve(process.cwd(), 'debug');
+                if (!fs.existsSync(debugDir)) {
+                    fs.mkdirSync(debugDir, { recursive: true });
+                }
+                const dumpFile = path.join(debugDir, `WAF_${task.market}_${task.asin}_${Date.now()}.html`);
+                fs.writeFileSync(dumpFile, html, 'utf-8');
+
                 const wafAlertMsg = `BLOCCO WAF AMAZON RILEVATO!\n\n` +
                     `- Mercato: ${task.market}\n` +
                     `- ASIN: ${task.asin}\n` +
-                    `- IP Macchina/Container intercettato da Amazon.\n` +
+                    `- Titolo pagina: "${pageTitle}"\n` +
+                    `- Form Captcha presente: ${hasCaptchaForm}\n` +
+                    `- Dump HTML salvato per ispezione: ${dumpFile}\n` +
                     `- Azione consigliata: Verificare la rotazione IP o allungare le pause minime per evitare il ban persistente dell'IP di rete.`;
 
-                console.error(`[Scraper - ${this.name}]  ${wafAlertMsg}`);
+                console.error(`[Scraper - ${this.name}] ${wafAlertMsg}`);
                 
-                // Invia email di priorità massima
                 await notifier.sendAlert(`EMERGENZA ANTI-BOT: Blocco su ${task.market}`, wafAlertMsg);
                 throw new Error("CAPTCHA_DETECTED");
             }
@@ -528,8 +580,7 @@ private async handleLongPauses(): Promise<void> {
 
             let bestPrice: number | null = null;
             let bestShipping: number | null = null;
-            let bestOfferIsSoldByAmazon: boolean = false; // 1. Variabile per salvare se l'offerta migliore è di Amazon
-
+    
             $aod('#aod-offer, #aod-pinned-offer, #all-offers-display-offer').each((_, element) => {
                 const $offer = $aod(element);
 
@@ -558,11 +609,6 @@ private async handleLongPauses(): Promise<void> {
                     }
                 }
 
-                // 2. QUI: Se abbiamo trovato un prezzo per questa offerta, ne leggiamo il venditore
-                if (bestPrice !== null) {
-                    const sellerText = $offer.find('#aod-offer-soldBy, [id*="soldBy"], .aod-offer-soldBy-text, #aod-offer-shipsFrom').text().toLowerCase();
-                    bestOfferIsSoldByAmazon = sellerText.includes('amazon');
-                }
 
                 // Estrazione Spedizione
                 if (bestPrice !== null && bestShipping === null) {
@@ -700,10 +746,29 @@ private async handleLongPauses(): Promise<void> {
     // RESILIENZA E MICRO-RETRY DI RETE
     // =====================================================================
     protected async fetchHtmlWithRetry(url: string, market: AmazonMarket, extraHeaders: Record<string, string> = {}): Promise<string> {
-        const localeMap: Record<AmazonMarket, string[]> = {
-            'amazon.it': ['it-IT', 'en-US'], 'amazon.fr': ['fr-FR', 'en-US'], 'amazon.de': ['de-DE', 'en-US'],
+        // Assicura che il cookie jar contenga almeno i cookie di sessione di base
+        await this.warmUpSession(market);
+
+        const defaultHeaders: Record<string, string> = {
+            'accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'accept-encoding': 'gzip, deflate, br, zstd',
+            'accept-language': 'it-IT,it;q=0.9',
+            'sec-ch-ua': '"Chromium";v="154", "Not A(Brand";v="99"',
+            'sec-ch-ua-mobile': '?0',
+            'sec-ch-ua-platform': '"Windows"',
+            'sec-ch-ua-platform-version': '"19.0.0"',
+            'upgrade-insecure-requests': '1',
+            'service-worker-navigation-preload': 'true',
+            'sec-gpc': '1',
+            'sec-fetch-site': 'none',
+            'sec-fetch-mode': 'navigate',
+            'sec-fetch-user': '?1',
+            'sec-fetch-dest': 'document',
+            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36'
         };
-        
+
+        const mergedHeaders = { ...defaultHeaders, ...extraHeaders };
+
         let attempt = 0;
         const MAX_RETRIES = 3;
 
@@ -711,12 +776,12 @@ private async handleLongPauses(): Promise<void> {
             try {
                 const response = await gotScraping({
                     url: url,
+                    http2: true,
                     cookieJar: this.cookieJar,
-                    headers: extraHeaders,
+                    headers: mergedHeaders,
                     headerGeneratorOptions: {
-                        browsers: [{ name: 'chrome', minVersion: 110 }],
+                        browsers: [{ name: 'chrome', minVersion: 120 }],
                         devices: ['desktop'],
-                        locales: localeMap[market],
                         operatingSystems: ['windows']
                     }
                 });
@@ -725,8 +790,8 @@ private async handleLongPauses(): Promise<void> {
                 attempt++;
                 if (attempt >= MAX_RETRIES || error.response?.statusCode === 404) throw error;
                 
-                const backoff = (Math.random() * 2) + 3; // Retry rapido 3-5s
-                console.warn(`[Rete - ${this.name}] 502/Timeout su ${market}. Retry ${attempt}/${MAX_RETRIES} tra ${backoff.toFixed(1)}s...`);
+                const backoff = (Math.random() * 2) + 3;
+                console.warn(`[Rete - ${this.name}] Errore su ${market}. Retry ${attempt}/${MAX_RETRIES} tra ${backoff.toFixed(1)}s...`);
                 await this.sleep(backoff);
             }
         }

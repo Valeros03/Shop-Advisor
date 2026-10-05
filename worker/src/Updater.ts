@@ -93,20 +93,17 @@ export class ProductUpdater {
     private calculateLandedCost(product: NormalizedProduct): number | null {
         if (product.price === null) return null;
 
-        const shipping = product.shippingCost ?? 0;
-
-        // SE È VENDUTO DA AMAZON (1P):
-        // Amazon unifica il prezzo lordo e assorbe l'IVA: nessun ricalcolo, aggiungiamo solo il trasporto.
-        if (product.isSoldByAmazon) {
+        // Su amazon.it non c'è conguaglio
+        if (product.market === "amazon.it") {
+            const shipping = product.shippingCost ?? 0;
             return Math.round((product.price + shipping) * 100) / 100;
         }
 
-        // SE È VENDUTO DA TERZI (3P):
-        // Il prezzo esposto è calibrato sull'IVA locale estera (19% o 20%).
-        // Al checkout per l'Italia viene scorporata l'aliquota estera e applicato il 22% italiano.
+        // Su DE (19%) e FR (20%) scorpora l'IVA d'origine e riapplica il 22% italiano
         const localVat = this.VAT_RATES[product.market] || this.TARGET_VAT;
         const priceWithoutVat = product.price / (1 + localVat);
         const normalizedPrice = priceWithoutVat * (1 + this.TARGET_VAT);
+        const shipping = product.shippingCost ?? 0;
         
         return Math.round((normalizedPrice + shipping) * 100) / 100;
     }

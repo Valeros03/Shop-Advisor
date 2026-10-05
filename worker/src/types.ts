@@ -22,7 +22,6 @@ export interface NormalizedProduct {
     price: number | null;
     shippingCost: number | null;
     currency: string;
-    isSoldByAmazon?: boolean;
 }
 
 export interface WorkerResult {

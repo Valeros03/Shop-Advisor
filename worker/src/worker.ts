@@ -591,10 +591,18 @@ export class SmartDispatcher {
                 const { hour, now } = this.getItalianTime();
 
                 // 1. FASCIA NOTTURNA (00:00 - 07:00)
-                // Se siamo tra mezzanotte e le 7 del mattino, pausa fino alle 07:00
                 if (hour >= 0 && hour < 7) {
-                    const next7AM = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
-                    next7AM.setHours(7, 0, 0, 0);
+                    const now = new Date();
+                    
+                    // Ottieni anno, mese e giorno correnti a Roma in formato YYYY-MM-DD
+                    const romeDateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Rome' }).format(now);
+                    
+                    // Crea l'oggetto Date per le 07:00 italiane odierne con offset esplicito
+                    const isDST = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Rome', timeZoneName: 'short' })
+                        .formatToParts(now).find(p => p.type === 'timeZoneName')?.value === 'GMT+2';
+                    const offset = isDST ? '+02:00' : '+01:00';
+                    
+                    const next7AM = new Date(`${romeDateStr}T07:00:00${offset}`);
 
                     const sleepMs = Math.max(10000, next7AM.getTime() - now.getTime());
                     const hoursLeft = (sleepMs / (1000 * 60 * 60)).toFixed(1);
@@ -658,15 +666,21 @@ export class SmartDispatcher {
                 }
 
                 // 5. FINESTRA DI TREGUA (15 minuti dopo la mezzanotte: fino alle 00:15)
-                const { now: currentTime, hour: currentH } = this.getItalianTime();
-                const truceTarget = new Date(currentTime.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
-
+                const { hour: currentH } = this.getItalianTime();
+                
                 if (currentH >= 7) {
-                    // Siamo di giorno/sera: puntiamo alle 00:15 della notte successiva
-                    truceTarget.setHours(24, 15, 0, 0);
+                    // Siamo ancora di giorno (es. tra le 07:00 e le 23:59) ma i task sono terminati o capacità esaurita
+                    const now = new Date();
+                    const nextMidnight = new Date();
+                    nextMidnight.setHours(24, 0, 0, 0); // Mezzanotte esatta
+
+                    const msToWait = Math.max(60000, nextMidnight.getTime() - now.getTime());
+                    const minutesWait = (msToWait / (1000 * 60)).toFixed(1);
+                    
+                    console.log(`[Dispatcher] Nessuna ulteriore scansione da effettuare. Attesa fino a mezzanotte (~${minutesWait} min)...`);
+                    await new Promise(resolve => setTimeout(resolve, msToWait));
                 } else {
-                    // È già passata la mezzanotte (00:00 - 00:14): puntiamo alle 00:15 attuali
-                    truceTarget.setHours(0, 15, 0, 0);
+                    console.log("[Dispatcher] Scansioni odierne concluse. Il ciclo ripassa alla gestione notturna.");
                 }
 
                 const msUntilTruceEnd = truceTarget.getTime() - currentTime.getTime();
