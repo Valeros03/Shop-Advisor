@@ -11,6 +11,10 @@ export class NotificationService {
     private toEmail: string;
     private isConfigured: boolean = false;
 
+    // Cache di deduplicazione: mappa chiave -> timestamp invio
+    private sentAlertsToday: Map<string, number> = new Map();
+    private lastResetDay: number = new Date().getDate();
+
     constructor() {
         const host = process.env.SMTP_HOST || "smtp.gmail.com";
         const port = parseInt(process.env.SMTP_PORT || "465", 10);
@@ -24,7 +28,7 @@ export class NotificationService {
             this.transporter = nodemailer.createTransport({
                 host,
                 port,
-                secure: port === 465, // true per SSL su porta 465
+                secure: port === 465,
                 auth: { user, pass }
             });
             this.isConfigured = true;
@@ -34,9 +38,65 @@ export class NotificationService {
     }
 
     /**
-     * Invia un alert email con supporto ad allegati opzionali (es. file diagnostico XML).
+     * Resetta la cache degli alert se siamo passati a un nuovo giorno di calendario.
+     */
+    private checkAndResetDailyCache(): void {
+        const currentDay = new Date().getDate();
+        if (currentDay !== this.lastResetDay) {
+            this.sentAlertsToday.clear();
+            this.lastResetDay = currentDay;
+            console.log("[NotificationService] Reset giornaliero della cache di deduplicazione completato.");
+        }
+    }
+
+    /**
+     * Calcola una chiave univoca per identificare l'errore.
+     * Isola l'ASIN e il market per evitare falsi positivi tra prodotti diversi.
+     */
+    private createDeduplicationKey(subject: string, message: string): string {
+        const content = `${subject} ${message}`;
+
+        // Cerca pattern standard ASIN (10 caratteri alfanumerici)
+        const asinMatch = content.match(/\b([B0-9][A-Z0-9]{9})\b/i);
+        const asin = asinMatch ? asinMatch[1].toUpperCase() : null;
+
+        // Cerca eventuale marketplace menzionato
+        const marketMatch = content.match(/amazon\.(it|fr|de)/i);
+        const market = marketMatch ? marketMatch[0].toLowerCase() : null;
+
+        // Normalizza il subject rimuovendo contatori tipo "(Fallimento #1)", date o timestamp
+        const normalizedSubject = subject
+            .replace(/\(Fallimento #\d+\)/gi, "")
+            .replace(/\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}/g, "")
+            .trim();
+
+        if (asin && market) {
+            return `${normalizedSubject}::ASIN_${asin}::MKT_${market}`;
+        }
+        if (asin) {
+            return `${normalizedSubject}::ASIN_${asin}`;
+        }
+
+        // Errore generico non legato a un prodotto specifico
+        return `${normalizedSubject}::GENERIC`;
+    }
+
+    /**
+     * Invia un alert email con supporto ad allegati e deduplicazione giornaliera.
      */
     public async sendAlert(subject: string, message: string, attachmentPath?: string): Promise<void> {
+        this.checkAndResetDailyCache();
+
+        const dedupKey = this.createDeduplicationKey(subject, message);
+
+        if (this.sentAlertsToday.has(dedupKey)) {
+            const firstSentTimestamp = new Date(this.sentAlertsToday.get(dedupKey)!).toLocaleTimeString('it-IT');
+            return;
+        }
+
+        // Registra l'avvenuto invio prima di procedere
+        this.sentAlertsToday.set(dedupKey, Date.now());
+
         if (!this.isConfigured || !this.transporter) {
             console.log(`[NotificationService] [DRY RUN] Alert: ${subject}`);
             console.log(`[NotificationService] [DRY RUN] Testo: ${message}`);
@@ -63,7 +123,7 @@ export class NotificationService {
                 </div>
                 ${attachmentPath ? `<p style="font-size: 12px; color: #666;">📎 In allegato trovi l'ispezione diagnostica XML completa del DOM analizzato.</p>` : ""}
                 <hr style="border: 0; border-top: 1px solid #eee; margin: 20px 0;" />
-                <p style="font-size: 11px; color: #999; margin: 0;">Inviato automaticamente dal servizio Worker ShopAdvisor.</p>
+                <p style="font-size: 11px; color: #999; margin: 0;">Inviato automaticamente dal servizio Worker ShopAdvisor. Eventuali repliche di questo errore per lo stesso contesto saranno soppresse fino a domani.</p>
             </div>
         `;
 
