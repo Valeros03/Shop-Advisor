@@ -5,7 +5,8 @@ export type AmazonMarket = "amazon.it" | "amazon.fr" | "amazon.de";
 export interface PriceSnapshot {
     price: number;
     shipping: number;
-    timestamp: string; // Formato ISO 8601
+    timestamp: string;
+    isPrimeExclusive?: boolean;
 }
 
 export interface Task {
@@ -22,6 +23,7 @@ export interface NormalizedProduct {
     price: number | null;
     shippingCost: number | null;
     currency: string;
+    isPrimeExclusive?: boolean;
 }
 
 export interface WorkerResult {

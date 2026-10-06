@@ -6,7 +6,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { 
   ChevronLeft, Bell, AlertTriangle, ExternalLink, Info, 
-  TrendingDown, TrendingUp, CheckCircle2, Loader2
+  TrendingDown, TrendingUp, CheckCircle2, Loader2, Crown
 } from "lucide-react";
 import { 
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend 
@@ -49,14 +49,14 @@ export default function ProductPage() {
   }, [asin]);
 
   const parsedAlertPrice = parseFloat(alertPrice) || 0;
-const isPriceTooLow = 
-  productData && 
-  productData.hasLongHistory && 
-  parsedAlertPrice > 0 && 
-  parsedAlertPrice < (productData.absoluteMin * 0.80);
+  const isPriceTooLow = 
+    productData && 
+    productData.hasLongHistory && 
+    parsedAlertPrice > 0 && 
+    parsedAlertPrice < (productData.absoluteMin * 0.80);
 
-// Info per prodotti con monitoraggio iniziato da poco
-const isNewTracking = productData && !productData.hasLongHistory;
+  const isNewTracking = productData && !productData.hasLongHistory;
+
   const handleSaveAlert = async () => {
     if (!asin || parsedAlertPrice <= 0) return;
 
@@ -113,7 +113,16 @@ const isNewTracking = productData && !productData.hasLongHistory;
     );
   }
 
-  const { product: productMock, marketsStats, chartData, absoluteMin } = productData;
+  const { product: productMock, marketsStats, chartData } = productData;
+
+  const marketsWithPrime = marketsStats.map((m: any) => {
+    const isPrime = m.isPrimeExclusive ?? 
+                    (m.code === "IT" && productMock.isPrimeExclusiveIT) ??
+                    (m.code === "FR" && productMock.isPrimeExclusiveFR) ??
+                    (m.code === "DE" && productMock.isPrimeExclusiveDE) ?? 
+                    false;
+    return { ...m, isPrimeExclusive: isPrime };
+  });
 
   return (
     <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -139,7 +148,7 @@ const isNewTracking = productData && !productData.hasLongHistory;
           <div className="flex items-start gap-2 bg-blue-900/20 border border-blue-900/50 p-3 rounded-xl inline-flex text-blue-200 text-sm max-w-2xl">
             <Info className="w-5 h-5 flex-shrink-0 mt-0.5 text-blue-400" />
             <p>
-              I prezzi mostrati su questa pagina sono <strong>Finali</strong>. Includono già l&apos;adeguamento IVA per l&apos;Italia e i costi di spedizione stimati. Il prezzo che vedi è quello che pagherai al checkout.
+              I prezzi mostrati su questa pagina sono <strong>Finali</strong>. Includono già l&apos;adeguamento IVA per l&apos;Italia e i costi di spedizione stimati.
             </p>
           </div>
         </div>
@@ -148,7 +157,7 @@ const isNewTracking = productData && !productData.hasLongHistory;
       {/* GRIGLIA PRINCIPALE: GRAFICO + TRACKER BOX */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
         
-        {/* COLONNA SINISTRA: Grafico Storico (Occupa 2 colonne) */}
+        {/* COLONNA SINISTRA: Grafico Storico */}
         <div className="lg:col-span-2 bg-white rounded-3xl p-6 shadow-sm border border-gray-100">
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-xl font-bold text-gray-900">Storico Prezzi (1 Anno)</h2>
@@ -157,16 +166,53 @@ const isNewTracking = productData && !productData.hasLongHistory;
           
           <div className="h-80 w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 5 }}>
+              <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 5 }}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e5e7eb" />
                 <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{fill: '#6b7280', fontSize: 12}} />
                 <YAxis axisLine={false} tickLine={false} tick={{fill: '#6b7280', fontSize: 12}} unit="€" domain={['dataMin - 10', 'dataMax + 10']} />
                 
-                {/* Custom Tooltip per lo sfondo scuro della tua UI */}
+                {/* TOOLTIP PERSONALIZZATO CON BADGE PRIME ACCANTO AL PREZZO */}
                 <Tooltip 
-                  contentStyle={{ backgroundColor: '#111827', borderRadius: '12px', border: 'none', color: '#fff' }}
-                  itemStyle={{ fontWeight: 'bold' }}
+                  content={({ active, payload, label }) => {
+                    if (!active || !payload || !payload.length) return null;
+
+                    return (
+                      <div className="bg-[#111827] border border-gray-700 p-3 rounded-xl shadow-xl text-white min-w-[170px]">
+                        <div className="text-xs font-bold text-gray-400 mb-2 border-b border-gray-700/80 pb-1">
+                          {label}
+                        </div>
+                        <div className="flex flex-col gap-2">
+                          {payload.map((entry: any) => {
+                            const marketKey = entry.dataKey; // "IT", "FR", "DE"
+                            const isPrime = entry.payload?.[`${marketKey}_isPrime`];
+
+                            return (
+                              <div key={marketKey} className="flex items-center justify-between gap-3 text-sm">
+                                <span className="font-bold flex items-center gap-1.5" style={{ color: entry.color }}>
+                                  <span className="w-2 h-2 rounded-full inline-block" style={{ backgroundColor: entry.color }} />
+                                  {entry.name}:
+                                </span>
+                                
+                                <span className="font-extrabold text-white flex items-center gap-1.5">
+                                  {entry.value !== null && entry.value !== undefined ? `${Number(entry.value).toFixed(2)}€` : "N/D"}
+                                  {isPrime && (
+                                    <span 
+                                      title="Offerta esclusiva Prime"
+                                      className="inline-flex items-center gap-0.5 bg-amber-400 text-black text-[10px] font-black px-1.5 py-0.2 rounded-full shadow-sm"
+                                    >
+                                      👑 Prime
+                                    </span>
+                                  )}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  }}
                 />
+
                 <Legend iconType="circle" wrapperStyle={{ fontSize: '14px', paddingTop: '10px' }} />
                 
                 <Line 
@@ -204,11 +250,9 @@ const isNewTracking = productData && !productData.hasLongHistory;
           </div>
         </div>
 
-        {/* COLONNA DESTRA: Box Attivazione Alert */}
         {/* COLONNA DESTRA: Box Gestione / Attivazione Alert */}
         <div className="bg-gray-800 rounded-3xl p-6 border-2 border-gray-700 flex flex-col justify-between">
           <div>
-            {/* Header del Box con stato di tracciamento */}
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2">
                 <Bell className={productData.isUserTracking ? "text-green-400 w-6 h-6 animate-pulse" : "text-[#2b8a3e] w-6 h-6"} />
@@ -229,7 +273,6 @@ const isNewTracking = productData && !productData.hasLongHistory;
                 : "Ti invieremo un messaggio su Telegram appena il prezzo finale scende sotto la tua soglia."}
             </p>
 
-            {/* Riepilogo soglia attiva se già tracciato */}
             {productData.isUserTracking && productData.currentAlertPrice && (
               <div className="mb-4 p-3 bg-gray-900/80 rounded-xl border border-gray-700/60 flex items-center justify-between">
                 <div>
@@ -257,7 +300,6 @@ const isNewTracking = productData && !productData.hasLongHistory;
               </div>
             )}
 
-            {/* Input Prezzo Desiderato con pulsante Prezzo Consigliato */}
             <div className="flex items-center justify-between mb-2">
               <label className="block text-sm font-semibold text-gray-300">
                 {productData.isUserTracking ? "Modifica Soglia Alert (€)" : "Prezzo Desiderato (€)"}
@@ -286,7 +328,6 @@ const isNewTracking = productData && !productData.hasLongHistory;
               <span className="absolute right-6 top-1/2 -translate-y-1/2 text-gray-400 text-xl font-bold">€</span>
             </div>
 
-            {/* Banner Dinamico Intelligente */}
             {isPriceTooLow ? (
               <div className="bg-orange-500/10 border border-orange-500/30 p-3 rounded-lg flex items-start gap-3 mb-4 animate-in fade-in">
                 <AlertTriangle className="text-orange-500 w-5 h-5 flex-shrink-0 mt-0.5" />
@@ -304,11 +345,9 @@ const isNewTracking = productData && !productData.hasLongHistory;
             ) : null}
           </div>
 
-          {/* Pulsante Azione Dinamico */}
           <button 
             onClick={async () => {
               await handleSaveAlert();
-              // Aggiorna lo stato locale dopo il salvataggio
               setProductData((prev: any) => ({
                 ...prev,
                 isUserTracking: true,
@@ -339,18 +378,24 @@ const isNewTracking = productData && !productData.hasLongHistory;
       <h3 className="text-xl font-bold text-white mb-4">Dettagli per Mercato</h3>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-        {marketsStats.map((market: any) => (
+        {marketsWithPrime.map((market: any) => (
           <div key={market.code} className="bg-white rounded-3xl p-6 flex flex-col shadow-sm border border-gray-100 relative overflow-hidden">
             
-            {/* Riga Colorata in cima alla card */}
             <div className="absolute top-0 left-0 right-0 h-1" style={{ backgroundColor: market.color }} />
 
-            <div className="flex justify-between items-center mb-6">
+            <div className="flex justify-between items-start mb-6">
               <div className="flex items-center gap-2 text-xl font-bold text-gray-900">
                 {market.flag} {market.name}
               </div>
               <div className="text-right">
-                <div className="text-[10px] uppercase font-bold text-gray-400">Prezzo Attuale</div>
+                <div className="flex items-center justify-end gap-1.5 mb-1">
+                  <span className="text-[10px] uppercase font-bold text-gray-400">Prezzo Attuale</span>
+                  {market.isPrimeExclusive && (
+                    <span className="inline-flex items-center gap-1 bg-amber-100 text-amber-800 border border-amber-300 text-[10px] font-bold px-1.5 py-0.5 rounded-md">
+                      <Crown size={11} className="text-amber-600" /> Prime
+                    </span>
+                  )}
+                </div>
                 <div className="text-2xl font-black text-gray-900">{market.current ? `${market.current.toFixed(2)}€` : 'N/A'}</div>
               </div>
             </div>

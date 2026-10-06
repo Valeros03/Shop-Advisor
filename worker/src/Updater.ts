@@ -143,6 +143,7 @@ export class ProductUpdater {
                 id: true,
                 name: true,
                 currentPriceIT: true, currentPriceFR: true, currentPriceDE: true,
+                isPrimeExclusiveIT: true, isPrimeExclusiveFR: true, isPrimeExclusiveDE: true,
                 historyIT: true, historyFR: true, historyDE: true,
                 priorityCode: true, unchangedCount: true,
                 _count: { select: { alerts: { where: { isActive: true } } } }
@@ -159,9 +160,9 @@ export class ProductUpdater {
         const deLandedCost = deEntry ? this.calculateLandedCost(deEntry.data) : undefined;
 
         // Log espliciti di non disponibilità
-        if (itLandedCost === null) console.log(`[Updater] ℹ️ ASIN ${asin} non disponibile su amazon.it (prezzo -> null)`);
-        if (frLandedCost === null) console.log(`[Updater] ℹ️ ASIN ${asin} non disponibile su amazon.fr (prezzo -> null)`);
-        if (deLandedCost === null) console.log(`[Updater] ℹ️ ASIN ${asin} non disponibile su amazon.de (prezzo -> null)`);
+        if (itLandedCost === null) console.log(`[Updater] ASIN ${asin} non disponibile su amazon.it (prezzo -> null)`);
+        if (frLandedCost === null) console.log(`[Updater] ASIN ${asin} non disponibile su amazon.fr (prezzo -> null)`);
+        if (deLandedCost === null) console.log(`[Updater] ASIN ${asin} non disponibile su amazon.de (prezzo -> null)`);
 
         const changedIT = itLandedCost !== undefined && itLandedCost !== currentProduct.currentPriceIT;
         const changedFR = frLandedCost !== undefined && frLandedCost !== currentProduct.currentPriceFR;
@@ -196,7 +197,8 @@ export class ProductUpdater {
             return [...list, { 
                 price: landedCost, 
                 shipping: entry.data.shippingCost ?? 0, 
-                timestamp: entry.timestamp.toISOString() 
+                timestamp: entry.timestamp.toISOString(),
+                isPrimeExclusive: entry.data.isPrimeExclusive ?? false
             }];
         };
 
@@ -204,18 +206,24 @@ export class ProductUpdater {
         await this.prisma.product.update({
             where: { asin },
             data: {
+                // amazon.it
                 currentPriceIT: itLandedCost !== undefined ? itLandedCost : currentProduct.currentPriceIT,
                 shippingIT: itEntry !== undefined ? (itEntry.data.price === null ? null : itEntry.data.shippingCost) : undefined,
+                isPrimeExclusiveIT: itEntry !== undefined ? (itEntry.data.price === null ? false : (itEntry.data.isPrimeExclusive ?? false)) : undefined, // <-- AGGIUNTO
                 historyIT: appendHistory(currentProduct.historyIT, itEntry, itLandedCost) as any,
 
+                // amazon.fr
                 currentPriceFR: frLandedCost !== undefined ? frLandedCost : currentProduct.currentPriceFR,
                 shippingFR: frEntry !== undefined ? (frEntry.data.price === null ? null : frEntry.data.shippingCost) : undefined,
+                isPrimeExclusiveFR: frEntry !== undefined ? (frEntry.data.price === null ? false : (frEntry.data.isPrimeExclusive ?? false)) : undefined, // <-- AGGIUNTO
                 historyFR: appendHistory(currentProduct.historyFR, frEntry, frLandedCost) as any,
 
+                // amazon.de
                 currentPriceDE: deLandedCost !== undefined ? deLandedCost : currentProduct.currentPriceDE,
                 shippingDE: deEntry !== undefined ? (deEntry.data.price === null ? null : deEntry.data.shippingCost) : undefined,
+                isPrimeExclusiveDE: deEntry !== undefined ? (deEntry.data.price === null ? false : (deEntry.data.isPrimeExclusive ?? false)) : undefined, // <-- AGGIUNTO
                 historyDE: appendHistory(currentProduct.historyDE, deEntry, deLandedCost) as any,
-
+                
                 priorityCode: newPriority,
                 unchangedCount: newUnchangedCount,
                 mustTomorrow: false, 
@@ -231,9 +239,27 @@ export class ProductUpdater {
         const finalFR = frLandedCost !== undefined ? frLandedCost : currentProduct.currentPriceFR;
         const finalDE = deLandedCost !== undefined ? deLandedCost : currentProduct.currentPriceDE;
 
-        if (typeof finalIT === 'number' && finalIT > 0) marketPrices.push({ market: 'amazon.it', price: finalIT });
-        if (typeof finalFR === 'number' && finalFR > 0) marketPrices.push({ market: 'amazon.fr', price: finalFR });
-        if (typeof finalDE === 'number' && finalDE > 0) marketPrices.push({ market: 'amazon.de', price: finalDE });
+        if (typeof finalIT === 'number' && finalIT > 0) {
+            marketPrices.push({ 
+                market: 'amazon.it', 
+                price: finalIT, 
+                isPrimeExclusive: itEntry?.data.isPrimeExclusive ?? false 
+            });
+        }
+        if (typeof finalFR === 'number' && finalFR > 0) {
+            marketPrices.push({ 
+                market: 'amazon.fr', 
+                price: finalFR, 
+                isPrimeExclusive: frEntry?.data.isPrimeExclusive ?? false 
+            });
+        }
+        if (typeof finalDE === 'number' && finalDE > 0) {
+            marketPrices.push({ 
+                market: 'amazon.de', 
+                price: finalDE, 
+                isPrimeExclusive: deEntry?.data.isPrimeExclusive ?? false 
+            });
+        }
 
         if (marketPrices.length > 0) {
             await this.checkAndTriggerAlerts(
@@ -251,7 +277,7 @@ export class ProductUpdater {
         asin: string, 
         productName: string, 
         imageUrl: string,
-        marketPrices: { market: string; price: number }[]
+        marketPrices: { market: string; price: number; isPrimeExclusive?: boolean }[]
     ): Promise<void> {
         try {
             const absoluteLowest = Math.min(...marketPrices.map(m => m.price));
@@ -289,7 +315,8 @@ export class ProductUpdater {
                     bestPrice: currentBestPrice,
                     bestMarket: bestMarketEntry.market,
                     qualifyingMarkets: qualifying,
-                    imageUrl: imageUrl
+                    imageUrl: imageUrl,
+                    isPrimeExclusive: bestMarketEntry.isPrimeExclusive ?? false
                 });
 
                 if (result === "SENT") {

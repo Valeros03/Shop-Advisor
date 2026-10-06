@@ -4,6 +4,7 @@ import axios from "axios";
 export interface QualifyingMarket {
     market: string;
     price: number;
+    isPrimeExclusive?: boolean;
 }
 
 export interface UnifiedPriceAlertPayload {
@@ -15,6 +16,7 @@ export interface UnifiedPriceAlertPayload {
     bestMarket: string;
     qualifyingMarkets: QualifyingMarket[];
     imageUrl?: string;
+    isPrimeExclusive?: boolean;
 }
 
 export type SendAlertResult = "SENT" | "BLOCKED" | "FAILED";
@@ -34,7 +36,7 @@ export class TelegramNotificationService {
         this.baseUrl = `https://api.telegram.org/bot${this.botToken}`;
 
         if (!this.botToken) {
-            console.warn("[TelegramService]TELEGRAM_BOT_TOKEN non impostato. Le notifiche saranno simulate a terminale.");
+            console.warn("[TelegramService] TELEGRAM_BOT_TOKEN non impostato. Le notifiche saranno simulate a terminale.");
         }
     }
 
@@ -42,44 +44,57 @@ export class TelegramNotificationService {
      * Invia un alert unificato con le statistiche del miglior prezzo 
      * e l'elenco di tutti i mercati scesi sotto la soglia desiderata.
      */
-    public async sendPriceAlert(payload: UnifiedPriceAlertPayload): Promise<boolean> {
+    public async sendPriceAlert(payload: UnifiedPriceAlertPayload): Promise<SendAlertResult> {
         if (!this.botToken) {
-            console.log(`[TelegramService] Notifica a ${payload.telegramId}`);
+            console.log(`[TelegramService] Notifica simulata a ${payload.telegramId}`);
             return "SENT";
         }
 
         const bestMarketName = this.marketLabels[payload.bestMarket] || payload.bestMarket;
         const totalSaved = (payload.targetPrice - payload.bestPrice).toFixed(2);
 
-        // Composizione della lista di tutti i mercati sotto soglia e dei relativi bottoni
         let marketsDetailsText = "";
         const inlineKeyboardButtons: { text: string; url: string }[][] = [];
+        let hasAnyPrimeOffer = false;
 
         for (const item of payload.qualifyingMarkets) {
             const label = this.marketLabels[item.market] || item.market;
             const diff = (payload.targetPrice - item.price).toFixed(2);
             const url = `https://www.${item.market}/dp/${payload.asin}`;
             const isAbsoluteBest = item.market === payload.bestMarket;
+            const isPrime = Boolean(item.isPrimeExclusive);
 
-            marketsDetailsText += `- <b>${label}</b>: <b>${item.price.toFixed(2)}€</b> (Risparmi: <i>${diff}€</i>)${isAbsoluteBest ? " 🏆 <b>MIGLIORE</b>" : ""}\n`;
-            
+            if (isPrime) {
+                hasAnyPrimeOffer = true;
+            }
+
+            const primeTag = isPrime ? " 👑 <i>(Esclusiva Prime)</i>" : "";
+            const bestTag = isAbsoluteBest ? " 🏆 <b>MIGLIORE</b>" : "";
+
+            marketsDetailsText += `- <b>${label}</b>: <b>${item.price.toFixed(2)}€</b> (Risparmi: <i>${diff}€</i>)${primeTag}${bestTag}\n`;
+
             inlineKeyboardButtons.push([
                 {
-                    text: `Acquista su ${label} (${item.price.toFixed(2)}€)`,
+                    text: `${isPrime ? "👑 " : ""}Acquista su ${label} (${item.price.toFixed(2)}€)`,
                     url: url
                 }
             ]);
         }
+
+        const primeDisclaimer = hasAnyPrimeOffer 
+            ? `\n👑 <i>Le offerte contrassegnate sono esclusive per i membri Amazon Prime del rispettivo paese (attivabili anche tramite i 30 giorni di prova gratuita).</i>\n` 
+            : "";
 
         const messageText = 
             `🔔 <b>PREZZO TARGET RAGGIUNTO!</b>\n\n` +
             `📦 <b>${payload.productName}</b>\n` +
             `🏷️ ASIN: <code>${payload.asin}</code>\n\n` +
             `🎯 Tuo Prezzo Target: <b>${payload.targetPrice.toFixed(2)}€</b>\n` +
-            `🔥 Minimo Raggiunto: <b>${payload.bestPrice.toFixed(2)}€</b> (${bestMarketName})\n` +
+            `🔥 Minimo Raggiunto: <b>${payload.bestPrice.toFixed(2)}€</b> (${bestMarketName})${payload.isPrimeExclusive ? " 👑" : ""}\n` +
             `📉 Risparmio Massimo: <b>${totalSaved}€</b>\n\n` +
             `📋 <b>Mercati sotto soglia disponibili:</b>\n` +
-            `${marketsDetailsText}\n` +
+            `${marketsDetailsText}` +
+            `${primeDisclaimer}\n` +
             `<i>I prezzi visualizzati includono già l'adeguamento IVA per l'Italia e la spedizione standard.</i>`;
 
         try {

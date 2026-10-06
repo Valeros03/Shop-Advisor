@@ -11,6 +11,7 @@ interface PriceSnapshot {
   price: number;
   shipping: number;
   timestamp: string;
+  isPrimeExclusive?: boolean;
 }
 
 async function getAuthenticatedUserId(): Promise<string | null> {
@@ -100,39 +101,58 @@ export async function GET(request: Request, context: any) {
     const historyDaysCount = allDates.length;
     const hasLongHistory = historyDaysCount >= 14;
 
-    const getPriceForDate = (history: PriceSnapshot[], date: string) => {
+    const getSnapshotForDate = (history: PriceSnapshot[], date: string): PriceSnapshot | null => {
       const relevantRecords = history.filter(h => h.timestamp.split('T')[0] <= date);
-      return relevantRecords.length > 0 ? relevantRecords[relevantRecords.length - 1].price : null;
+      return relevantRecords.length > 0 ? relevantRecords[relevantRecords.length - 1] : null;
     };
 
     let chartData: any[] = [];
     if (allDates.length === 1) {
       const singleDate = allDates[0];
       const dateLabel = new Date(singleDate).toLocaleDateString('it-IT', { month: 'short', day: 'numeric' });
+      const snapIT = getSnapshotForDate(historyIT, singleDate);
+      const snapFR = getSnapshotForDate(historyFR, singleDate);
+      const snapDE = getSnapshotForDate(historyDE, singleDate);
+
       chartData = [
         {
           month: `${dateLabel} (Rilevazione)`,
           fullDate: singleDate,
-          IT: getPriceForDate(historyIT, singleDate) ?? product.currentPriceIT,
-          FR: getPriceForDate(historyFR, singleDate) ?? product.currentPriceFR,
-          DE: getPriceForDate(historyDE, singleDate) ?? product.currentPriceDE,
+          IT: snapIT?.price ?? product.currentPriceIT,
+          IT_isPrime: Boolean(snapIT?.isPrimeExclusive),
+          FR: snapFR?.price ?? product.currentPriceFR,
+          FR_isPrime: Boolean(snapFR?.isPrimeExclusive),
+          DE: snapDE?.price ?? product.currentPriceDE,
+          DE_isPrime: Boolean(snapDE?.isPrimeExclusive),
         },
         {
           month: 'Attuale',
           fullDate: singleDate,
-          IT: product.currentPriceIT ?? getPriceForDate(historyIT, singleDate),
-          FR: product.currentPriceFR ?? getPriceForDate(historyFR, singleDate),
-          DE: product.currentPriceDE ?? getPriceForDate(historyDE, singleDate),
+          IT: product.currentPriceIT ?? snapIT?.price,
+          IT_isPrime: Boolean((product as any).isPrimeExclusiveIT ?? snapIT?.isPrimeExclusive),
+          FR: product.currentPriceFR ?? snapFR?.price,
+          FR_isPrime: Boolean((product as any).isPrimeExclusiveFR ?? snapFR?.isPrimeExclusive),
+          DE: product.currentPriceDE ?? snapDE?.price,
+          DE_isPrime: Boolean((product as any).isPrimeExclusiveDE ?? snapDE?.isPrimeExclusive),
         },
       ];
     } else {
-      chartData = allDates.map(date => ({
-        month: new Date(date).toLocaleDateString('it-IT', { month: 'short', day: 'numeric' }),
-        fullDate: date,
-        IT: getPriceForDate(historyIT, date),
-        FR: getPriceForDate(historyFR, date),
-        DE: getPriceForDate(historyDE, date),
-      }));
+      chartData = allDates.map(date => {
+        const snapIT = getSnapshotForDate(historyIT, date);
+        const snapFR = getSnapshotForDate(historyFR, date);
+        const snapDE = getSnapshotForDate(historyDE, date);
+
+        return {
+          month: new Date(date).toLocaleDateString('it-IT', { month: 'short', day: 'numeric' }),
+          fullDate: date,
+          IT: snapIT?.price ?? null,
+          IT_isPrime: Boolean(snapIT?.isPrimeExclusive),
+          FR: snapFR?.price ?? null,
+          FR_isPrime: Boolean(snapFR?.isPrimeExclusive),
+          DE: snapDE?.price ?? null,
+          DE_isPrime: Boolean(snapDE?.isPrimeExclusive),
+        };
+      });
     }
 
     const allMinPrices = [statsIT.min, statsFR.min, statsDE.min].filter(p => p > 0);
@@ -161,18 +181,44 @@ export async function GET(request: Request, context: any) {
         asin: product.asin,
         name: product.name,
         image: product.image,
+        isPrimeExclusiveIT: (product as any).isPrimeExclusiveIT ?? false,
+        isPrimeExclusiveFR: (product as any).isPrimeExclusiveFR ?? false,
+        isPrimeExclusiveDE: (product as any).isPrimeExclusiveDE ?? false,
       },
       marketsStats: [
-        { code: 'IT', name: 'Italia', flag: '🇮🇹', color: '#2b8a3e', url: `https://amazon.it/dp/${product.asin}`, ...statsIT },
-        { code: 'FR', name: 'Francia', flag: '🇫🇷', color: '#3b82f6', url: `https://amazon.fr/dp/${product.asin}`, ...statsFR },
-        { code: 'DE', name: 'Germania', flag: '🇩🇪', color: '#f59e0b', url: `https://amazon.de/dp/${product.asin}`, ...statsDE },
+        { 
+          code: 'IT', 
+          name: 'Italia', 
+          flag: '🇮🇹', 
+          color: '#2b8a3e', 
+          url: `https://amazon.it/dp/${product.asin}`, 
+          isPrimeExclusive: (product as any).isPrimeExclusiveIT ?? false,
+          ...statsIT 
+        },
+        { 
+          code: 'FR', 
+          name: 'Francia', 
+          flag: '🇫🇷', 
+          color: '#3b82f6', 
+          url: `https://amazon.fr/dp/${product.asin}`, 
+          isPrimeExclusive: (product as any).isPrimeExclusiveFR ?? false,
+          ...statsFR 
+        },
+        { 
+          code: 'DE', 
+          name: 'Germania', 
+          flag: '🇩🇪', 
+          color: '#f59e0b', 
+          url: `https://amazon.de/dp/${product.asin}`, 
+          isPrimeExclusive: (product as any).isPrimeExclusiveDE ?? false,
+          ...statsDE 
+        },
       ],
       chartData,
       absoluteMin,
       historyDaysCount,
       hasLongHistory,
       recommendedPrice: Number(smartTargetPrice.toFixed(2)),
-      // Stato di tracciamento dell'utente
       isUserTracking: !!userAlert,
       currentAlertPrice: userAlert ? userAlert.targetPrice : null,
       alertId: userAlert ? userAlert.id : null,

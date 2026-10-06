@@ -22,8 +22,5 @@
     "ts-node": "^10.9.2",
     "tsx": "^4.23.15",
     "typescript": "^5.9.3"
-  },
-  "prisma": {
-    "schema": "../shop-advisor/prisma/schema.prisma"
   }
 }

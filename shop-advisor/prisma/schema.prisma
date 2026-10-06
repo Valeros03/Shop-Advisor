@@ -30,6 +30,10 @@ model Product {
   currentPriceFR Float?
   currentPriceDE Float?
 
+  isPrimeExclusiveIT Boolean? @default(false)
+  isPrimeExclusiveFR Boolean? @default(false)
+  isPrimeExclusiveDE Boolean? @default(false)
+
   shippingIT     Float?   @default(0.0)
   shippingFR     Float?   @default(0.0)
   shippingDE     Float?   @default(0.0)

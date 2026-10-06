@@ -237,33 +237,6 @@ export class CustomScraperWorker extends BaseWorker {
         }
     }
 
-    private extractIsSoldByAmazon($: cheerio.CheerioAPI): boolean {
-        const merchantContainer = $('#merchantInfoFeature_feature_div');
-        if (merchantContainer.length > 0) {
-            const merchantText = merchantContainer
-                .find('.offer-display-feature-text-message, #sellerProfileTriggerId, .a-size-small')
-                .text()
-                .trim()
-                .toLowerCase();
-
-            if (merchantText.includes('amazon')) return true;
-            if (merchantText.length > 0) return false;
-        }
-
-        const tabularMerchant = $('#tabular-buybox .tabular-buybox-text[tabular-attribute-name*="merchant"]');
-        if (tabularMerchant.length > 0) {
-            return tabularMerchant.text().toLowerCase().includes('amazon');
-        }
-
-        const merchantInfoLegacy = $('#merchant-info').text().toLowerCase();
-        if (merchantInfoLegacy.length > 0) {
-            const soldByAmazonRegex = /(?:venduto|vendu|sold|verkauft)\s+(?:da|par|by|von)\s+amazon/i;
-            if (soldByAmazonRegex.test(merchantInfoLegacy)) return true;
-            return false;
-        }
-
-        return false;
-    }
 
     // =====================================================================
     // RILEVAMENTO DIROTTAMENTO ASIN E STATO OUT OF STOCK
@@ -638,6 +611,18 @@ export class CustomScraperWorker extends BaseWorker {
     }
 
     private parseProductData($: cheerio.CheerioAPI, task: Task): WorkerResult {
+        // 1. RILEVAMENTO OFFERTA ESCLUSIVA PRIME
+        const hasPrimeUpsellRow = $('#primeSavingsUpsellAccordionRow').length > 0;
+        const bodyText = $('body').text();
+        const hasPrimeExclusiveText = 
+            bodyText.includes('Exklusiver Prime-Preis') ||
+            bodyText.includes('Offre exclusive Prime') ||
+            bodyText.includes('Prezzo esclusivo Prime') ||
+            bodyText.includes('Dieser Preis gilt ausschließlich für Prime-Mitglieder');
+
+        const isPrimeExclusive = hasPrimeUpsellRow || hasPrimeExclusiveText;
+
+        // 2. ESTRAZIONE PREZZO
         const identifierDiv = $('.apex-core-price-identifier').first();
         let price: number | null = null;
         let shippingCost: number | null = null;
@@ -671,6 +656,7 @@ export class CustomScraperWorker extends BaseWorker {
             }
         }
 
+        // 3. ESTRAZIONE SPESE DI SPEDIZIONE
         if (shippingCost === null) {
             shippingCost = this.fallbackShippingExtraction($);
         }
@@ -686,7 +672,7 @@ export class CustomScraperWorker extends BaseWorker {
                 price, 
                 shippingCost: isNaN(shippingCost) ? 0 : shippingCost, 
                 currency: "EUR",
-                isSoldByAmazon: this.extractIsSoldByAmazon($)
+                isPrimeExclusive
             }
         };
     }
