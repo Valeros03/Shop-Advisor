@@ -1,10 +1,10 @@
 import { BaseWorker } from "../worker";
+import { isPastWorkerShift, getItalianMidnightTimestamp, getItalianTime } from "../worker";
 import { Task, WorkerResult, WorkerLimits, AmazonMarket } from "../types";
 import * as cheerio from "cheerio";
 import { gotScraping } from "got-scraping";
 import * as fs from "fs";
 import * as path from "path";
-// @ts-ignore
 // @ts-ignore
 import { CookieJar } from "tough-cookie";
 import { notifier } from "../service/NotificationService";
@@ -13,6 +13,7 @@ import { ProductUpdater } from "../Updater";
 interface PartialCluster {
     asin: string;
     tasks: Task[]; 
+    isMustTomorrow?: boolean;
 }
 
 interface ScheduledCluster {
@@ -60,45 +61,27 @@ export class CustomScraperWorker extends BaseWorker {
                 }
             });
             this.warmedMarkets.add(market);
-            // Breve pausa naturale dopo la visita alla homepage
             await this.sleep(Math.random() * 2 + 1.5);
         } catch (err: any) {
             console.warn(`[Scraper - ${this.name}] Warm-up fallito su ${market}:`, err.message);
         }
     }
 
-    private isPastMidnight(): boolean {
-        const parts = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'Europe/Rome',
-            hour: 'numeric',
-            hour12: false
-        }).formatToParts(new Date());
-        const hour = parseInt(parts.find(p => p.type === 'hour')!.value, 10);
-        
-        // Se siamo tra le 00:00 e le 06:59 del mattino, la giornata operativa è conclusa
-        return hour >= 0 && hour < 7;
-    }
-
     // =====================================================================
-    // LIVELLO 2: SIMULAZIONE VIRTUALE (La matematica corretta)
+    // LIVELLO 2: SIMULAZIONE VIRTUALE
     // =====================================================================
-    
     public getRawCurrency(): number {
-        // 17 ore di giornata attiva (07:00 - 00:00) = 61.200 secondi
         const totalActiveSeconds = 17 * 3600;
-        
-        // Sottraiamo SUBITO il worst-case delle Pause Lunghe (2 pause da max 60 min = 7200s)
         const longPausesSeconds = 120 * 60;
         return totalActiveSeconds - longPausesSeconds;
     }
 
     public setupVirtualSimulation(): void {
         this.virtualSeconds = this.getRawCurrency();
-        this.virtualDailyUsage = this.currentDailyUsage; // <-- AGGIUNTO: reset al valore iniziale
+        this.virtualDailyUsage = this.currentDailyUsage;
     }
 
     public consumeVirtualCurrency(isFirstTaskForAsin: boolean): boolean {
-        // Se è impostato un tetto numerico giornaliero e lo abbiamo raggiunto, rifiuta il task
         if (this.limits.dailyLimit !== -1 && this.virtualDailyUsage >= this.limits.dailyLimit) {
             return false;
         }
@@ -107,18 +90,13 @@ export class CustomScraperWorker extends BaseWorker {
         const MICRO_PAUSE_AVG = 8.25;
         const NETWORK_FETCH_AVG = 7.0;
         
-        let costSeconds = 0;
+        let costSeconds = isFirstTaskForAsin 
+            ? MACRO_PAUSE_AVG + NETWORK_FETCH_AVG 
+            : MICRO_PAUSE_AVG + NETWORK_FETCH_AVG;
 
-        if (isFirstTaskForAsin) {
-            costSeconds = MACRO_PAUSE_AVG + NETWORK_FETCH_AVG;
-        } else {
-            costSeconds = MICRO_PAUSE_AVG + NETWORK_FETCH_AVG;
-        }
-
-        // Verifica la disponibilità sia temporale (secondi) sia di gettoni
         if (this.virtualSeconds >= costSeconds) {
             this.virtualSeconds -= costSeconds;
-            this.virtualDailyUsage++; // <-- AGGIUNTO: scala il gettone virtuale
+            this.virtualDailyUsage++;
             return true;
         }
         return false;
@@ -130,8 +108,6 @@ export class CustomScraperWorker extends BaseWorker {
     public delegateAndOrganizeTasks(tasks: Task[]): void {
         console.log(`[Scraper - ${this.name}] Organizzazione di ${tasks.length} task in cluster coerenti...`);
 
-        // 1. Raggruppa i task per ciclo dello stesso ASIN (es. ASIN_0_cycle_0, ASIN_0_cycle_1)
-        // In questo modo i 3 mercati dello stesso ciclo rimangono uniti nello STESSO cluster
         const clusterMap = new Map<string, Task[]>();
 
         for (const task of tasks) {
@@ -143,18 +119,12 @@ export class CustomScraperWorker extends BaseWorker {
         }
 
         const now = Date.now();
-        const midnight = new Date();
-        midnight.setHours(23, 59, 59, 999);
-        const endOfDay = midnight.getTime();
+        const endOfDay = getItalianMidnightTimestamp();
 
         this.timelineQueue = [];
 
-        // 2. Crea i cluster basandosi sui targetSlotTime forniti dal Dispatcher
         for (const [_, clusterTasks] of clusterMap.entries()) {
-            // Se il task non ha targetSlotTime (es. nei vecchi test), usa now come fallback
             const baseTime = clusterTasks[0].targetSlotTime ?? now;
-            
-            // Jitter circoscritto (±45s) per naturalezza anti-bot senza alterare l'ondatata oraria
             const jitter = (Math.random() * 90000) - 45000;
             const targetTime = Math.min(Math.max(baseTime + jitter, now), endOfDay - 2000);
 
@@ -168,21 +138,20 @@ export class CustomScraperWorker extends BaseWorker {
             });
         }
 
-        // 3. Ordina cronologicamente per orario di esecuzione
         this.timelineQueue.sort((a, b) => a.targetTime - b.targetTime);
-
         console.log(`[Scraper - ${this.name}] Generati ${this.timelineQueue.length} cluster esecutivi sincronizzati con il Dispatcher.`);
     }
 
     // =====================================================================
-    // LIVELLO 3.C/D/E: ESECUZIONE DELLA TIMELINE (Pacing e Limiti Tassativi)
+    // LIVELLO 3.C/D/E: ESECUZIONE DELLA TIMELINE
     // =====================================================================
     public async executeDailyMission(updater: ProductUpdater): Promise<void> {
         while (this.timelineQueue.length > 0) {
-            // 1. Controllo limite notturno prima di estrarre il cluster
-            if (this.isPastMidnight()) {
+            // Gestione pause lunghe
+            await this.handleLongPauses();
+
+            if (isPastWorkerShift()) {
                 console.warn(`[Scraper - ${this.name}] Finestra notturna raggiunta! Annullamento cluster rimanenti.`);
-                
                 for (const job of this.timelineQueue) {
                     for (const task of job.cluster.tasks) {
                         updater.cancelPendingTask(task.asin, task.market, task.cycleIndex ?? 0);
@@ -193,15 +162,14 @@ export class CustomScraperWorker extends BaseWorker {
             }
 
             const scheduledJob = this.timelineQueue.shift()!;
-            
-            // 2. Attesa dello slot temporale programmato per il cluster
             const msUntilTarget = scheduledJob.targetTime - Date.now();
             if (msUntilTarget > 0) {
+                const waitMin = (msUntilTarget / 60000).toFixed(1);
+                console.log(`[Scraper - ${this.name}] In attesa di targetTime per ASIN ${scheduledJob.cluster.asin}: ~${waitMin} min...`);
                 await new Promise(resolve => setTimeout(resolve, msUntilTarget));
             }
 
-            // 3. Controllo dopo l'attesa
-            if (this.isPastMidnight()) {
+            if (isPastWorkerShift()) {
                 console.warn(`[Scraper - ${this.name}] Finestra notturna superata durante l'attesa per ${scheduledJob.cluster.asin}.`);
                 for (const task of scheduledJob.cluster.tasks) {
                     updater.cancelPendingTask(task.asin, task.market, task.cycleIndex ?? 0);
@@ -215,13 +183,19 @@ export class CustomScraperWorker extends BaseWorker {
                 break;
             }
 
-            // 4. Esecuzione dei task appartenenti al cluster (i vari mercati dello stesso ASIN)
             for (let i = 0; i < scheduledJob.cluster.tasks.length; i++) {
                 const task = scheduledJob.cluster.tasks[i];
                 
-                // Micropausa tra mercati dello stesso ASIN (evita burst istantanei)
+                // Se sono passate le 00:15 (fine della tregua), interrompe forzatamente
+                const { hour, minute } = getItalianTime();
+                if (hour === 0 && minute >= 15) {
+                    console.warn(`[Scraper - ${this.name}] Hard limit 00:15 raggiunto durante il cluster ${scheduledJob.cluster.asin}. Annullamento task rimanenti.`);
+                    updater.cancelPendingTask(task.asin, task.market, task.cycleIndex ?? 0);
+                    continue;
+                }
+
                 if (i > 0) {
-                    const microPause = (Math.random() * 4 + 6); // 6-10s
+                    const microPause = (Math.random() * 4 + 6);
                     await new Promise(resolve => setTimeout(resolve, microPause * 1000));
                 }
 
@@ -235,7 +209,6 @@ export class CustomScraperWorker extends BaseWorker {
                     );
                 } catch (error: any) {
                     console.error(`[Scraper - ${this.name}] Fallimento task ${task.asin} (${task.market}):`, error.message);
-                    
                     await updater.submitResult(
                         task.asin, 
                         task.market, 
@@ -248,72 +221,35 @@ export class CustomScraperWorker extends BaseWorker {
         console.log(`[Scraper - ${this.name}] Chiusura ciclo giornaliero.`);
     }
 
-   private getItalianTime(): { hour: number; now: Date } {
-    const now = new Date();
-    // Ottiene l'ora formattata sul fuso di Roma
-    const italianHourStr = new Intl.DateTimeFormat('it-IT', {
-        timeZone: 'Europe/Rome',
-        hour: 'numeric',
-        hour12: false
-    }).format(now);
-    
-    return { hour: parseInt(italianHourStr, 10), now };
-}
-
-private async handleLongPauses(): Promise<void> {
-    const { hour, now } = this.getItalianTime();
-    
-    // Finestra notturna: dalle 23:00 di sera fino alle 07:00 del mattino (orario italiano)
-    if (hour >= 23 || hour < 7) {
-        // Calcola i millisecondi esatti che mancano alle 07:00 del mattino
-        const next7AM = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
-        if (hour >= 23) {
-            next7AM.setDate(next7AM.getDate() + 1);
+    private async handleLongPauses(): Promise<void> {
+        // Se è passata mezzanotte, esce subito per permettere l'annullamento della coda
+        if (isPastWorkerShift()) {
+            return;
         }
-        next7AM.setHours(7, 0, 0, 0);
 
-        const msUntilMorning = Math.max(10000, next7AM.getTime() - now.getTime());
-        const hoursLeft = (msUntilMorning / (1000 * 60 * 60)).toFixed(1);
-
-        console.log(`[Scraper - ${this.name}] Sospensione notturna attiva (${hour}:00). Pausa calcolata fino alle 07:00 (~${hoursLeft}h)...`);
-        await this.sleep(msUntilMorning / 1000);
-        console.log(`[Scraper - ${this.name}] Ore 07:00 raggiunte. Ripresa scansioni!`);
-        return;
+        // Le pause di sicurezza casuali rimangono consentite solo tra le 11 e le 21
+        const { hour } = getItalianTime();
+        if (this.longPausesDone < 2 && hour >= 11 && hour <= 21 && Math.random() < 0.05) {
+            const pausaMinuti = Math.floor(Math.random() * 31) + 30;
+            console.log(`[Scraper - ${this.name}] Avvio pausa di sicurezza di ${pausaMinuti} min...`);
+            this.longPausesDone++;
+            await this.sleep(pausaMinuti * 60);
+        }
     }
-
-    // Tassativa: 1 o 2 pause lunghe durante il giorno (30-60 min tra le 11:00 e le 21:00)
-    if (this.longPausesDone < 2 && hour >= 11 && hour <= 21 && Math.random() < 0.05) {
-        const pausaMinuti = Math.floor(Math.random() * 31) + 30;
-        console.log(`[Scraper - ${this.name}] Avvio pausa lunga di ${pausaMinuti} min...`);
-        this.longPausesDone++;
-        await this.sleep(pausaMinuti * 60);
-    }
-}
-
 
     private extractIsSoldByAmazon($: cheerio.CheerioAPI): boolean {
-        // 1. Cerca specificamente nel container delle informazioni del venditore (Merchant Info)
         const merchantContainer = $('#merchantInfoFeature_feature_div');
         if (merchantContainer.length > 0) {
-            // Estrae il testo dell'effettivo messaggio o link del venditore
             const merchantText = merchantContainer
                 .find('.offer-display-feature-text-message, #sellerProfileTriggerId, .a-size-small')
                 .text()
                 .trim()
                 .toLowerCase();
 
-            // Se il venditore contiene esplicitamente "amazon", è un prodotto 1P
-            if (merchantText.includes('amazon')) {
-                return true;
-            }
-
-            // Se nel blocco merchant c'è del testo diverso (es. "Patriot Memory France"), è un venditore terzo
-            if (merchantText.length > 0) {
-                return false;
-            }
+            if (merchantText.includes('amazon')) return true;
+            if (merchantText.length > 0) return false;
         }
 
-        // 2. Fallback per layout Amazon alternativi o più vecchi
         const tabularMerchant = $('#tabular-buybox .tabular-buybox-text[tabular-attribute-name*="merchant"]');
         if (tabularMerchant.length > 0) {
             return tabularMerchant.text().toLowerCase().includes('amazon');
@@ -321,16 +257,59 @@ private async handleLongPauses(): Promise<void> {
 
         const merchantInfoLegacy = $('#merchant-info').text().toLowerCase();
         if (merchantInfoLegacy.length > 0) {
-            // Controlla se è venduto da Amazon (es. "venduto e spedito da amazon", "vendu par amazon", "sold by amazon")
             const soldByAmazonRegex = /(?:venduto|vendu|sold|verkauft)\s+(?:da|par|by|von)\s+amazon/i;
-            if (soldByAmazonRegex.test(merchantInfoLegacy)) {
-                return true;
-            }
-            // Se dice solo spedito da Amazon ma venduto da altri
+            if (soldByAmazonRegex.test(merchantInfoLegacy)) return true;
             return false;
         }
 
         return false;
+    }
+
+    // =====================================================================
+    // RILEVAMENTO DIROTTAMENTO ASIN E STATO OUT OF STOCK
+    // =====================================================================
+    private extractPageAsin($: cheerio.CheerioAPI, finalUrl?: string): string | null {
+        if (finalUrl) {
+            const urlMatch = finalUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+            if (urlMatch) return urlMatch[1].toUpperCase();
+        }
+
+        const canonical = $('link[rel="canonical"]').attr('href');
+        if (canonical) {
+            const canonicalMatch = canonical.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+            if (canonicalMatch) return canonicalMatch[1].toUpperCase();
+        }
+
+        const inputAsin = $('#ASIN').val() || $('input[name="ASIN"]').val() || $('input[name="idx.asin"]').val();
+        if (inputAsin && typeof inputAsin === 'string') {
+            const clean = inputAsin.trim().toUpperCase();
+            if (clean.length === 10) return clean;
+        }
+
+        const formAsin = $('form#addToCart input[name="ASIN"]').val() || $('#addToCart input[name="asin"]').val();
+        if (formAsin && typeof formAsin === 'string') {
+            const clean = formAsin.trim().toUpperCase();
+            if (clean.length === 10) return clean;
+        }
+
+        return null;
+    }
+
+    private isProductOutOfStock($: cheerio.CheerioAPI): boolean {
+        if ($('#outOfStock').length > 0) return true;
+
+        const availabilityText = $('#availability').text().toLowerCase();
+        const oosKeywords = [
+            'attualmente non disponibile',
+            'non disponibile',
+            'actuellement indisponible',
+            'derzeit nicht verfügbar',
+            'nicht auf lager',
+            'currently unavailable',
+            'out of stock'
+        ];
+
+        return oosKeywords.some(kw => availabilityText.includes(kw));
     }
 
     public async performFallbackRegexSearch(mainHtml: string, aodHtml: string | null, task: Task) {
@@ -364,7 +343,7 @@ private async handleLongPauses(): Promise<void> {
             const matches: TagMatch[] = [];
 
             $('span, div, b, strong, p, td, a').not('script, style, noscript, svg').each((_, element) => {
-                const $el =$(element);
+                const $el = $(element);
                 if ($el.children().length > 2) return;
 
                 const text = $el.text().replace(/\s+/g, ' ').trim();
@@ -455,46 +434,32 @@ private async handleLongPauses(): Promise<void> {
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             const filePath = path.join(dir, `${task.asin}_${task.market}_fallback.xml`);
             fs.writeFileSync(filePath, xmlOutput, 'utf-8');
-            console.log(`[Scraper - ${this.name}] File diagnostico unificato salvato: ${filePath}`);
-        } catch (err) {
-            console.error(`[Scraper - ${this.name}] Errore salvataggio file XML:`, err);
-        }
+            console.log(`[Scraper - ${this.name}] File diagnostico salvato: ${filePath}`);
 
-        try {
-            const dir = path.join(process.cwd(), 'debug');
-            if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-            const filePath = path.join(dir, `${task.asin}_${task.market}_fallback.xml`);
-            fs.writeFileSync(filePath, xmlOutput, 'utf-8');
-            console.log(`[Scraper - ${this.name}] File diagnostico unificato salvato: ${filePath}`);
-
-            // --- INVIO NOTIFICA CON DIAGNOSTICA XML ---
-            const subject = `SCRAPING ROTTO: ${task.asin} (${task.market})`;
+            const subject = `SCRAPING FALLITO: ${task.asin} (${task.market})`;
             const message = `Lo scraper non è riuscito a identificare il prezzo né dalla pagina madre né da AOD AJAX.\n` +
                             `Mercato: ${task.market}\n` +
                             `ASIN: ${task.asin}\n` +
-                            `File di debug generato: ${filePath}`;
+                            `File di debug: ${filePath}`;
 
-            // Se il tuo NotificationService ha un metodo per inviare allegati (es. sendAlertWithAttachment):
             if (typeof (notifier as any).sendAlertWithAttachment === "function") {
                 await (notifier as any).sendAlertWithAttachment(subject, message, filePath);
             } else {
-                // Fallback standard con sendAlert già presente nel tuo NotificationService
                 await notifier.sendAlert(subject, `${message}\n\nAnteprima XML:\n${xmlOutput.slice(0, 1500)}...`);
             }
-
         } catch (err) {
-            console.error(`[Scraper - ${this.name}] Errore salvataggio file XML o invio notifica:`, err);
+            console.error(`[Scraper - ${this.name}] Errore salvataggio file XML o notifica:`, err);
         }
     }
 
     // =====================================================================
-    // CORE DI ESTRAZIONE E GESTIONE DOM/AJAX
+    // CORE DI ESTRAZIONE CON CONTROLLI PREVENTIVI
     // =====================================================================
     protected async scrapeSingleMarket(task: Task): Promise<WorkerResult> {
         try {
             console.log(`[Scraper - ${this.name}] Fetching ${task.asin} su ${task.market}...`);
             const url = `https://www.${task.market}/dp/${task.asin}`;
-            const html = await this.fetchHtmlWithRetry(url, task.market);
+            const { html, finalUrl } = await this.fetchHtmlWithRetry(url, task.market);
             
             const $ = cheerio.load(html);
 
@@ -503,37 +468,44 @@ private async handleLongPauses(): Promise<void> {
             const isRobotTitle = pageTitle.toLowerCase().includes('robot check');
 
             if (isRobotTitle || hasCaptchaForm) {
-                // SALVATAGGIO PROVA HTML
                 const debugDir = path.resolve(process.cwd(), 'debug');
-                if (!fs.existsSync(debugDir)) {
-                    fs.mkdirSync(debugDir, { recursive: true });
-                }
+                if (!fs.existsSync(debugDir)) fs.mkdirSync(debugDir, { recursive: true });
                 const dumpFile = path.join(debugDir, `WAF_${task.market}_${task.asin}_${Date.now()}.html`);
                 fs.writeFileSync(dumpFile, html, 'utf-8');
 
-                const wafAlertMsg = `BLOCCO WAF AMAZON RILEVATO!\n\n` +
+                const wafAlertMsg = `BLOCCO WAF AMAZON RILEVATO!\n` +
                     `- Mercato: ${task.market}\n` +
                     `- ASIN: ${task.asin}\n` +
-                    `- Titolo pagina: "${pageTitle}"\n` +
-                    `- Form Captcha presente: ${hasCaptchaForm}\n` +
-                    `- Dump HTML salvato per ispezione: ${dumpFile}\n` +
-                    `- Azione consigliata: Verificare la rotazione IP o allungare le pause minime per evitare il ban persistente dell'IP di rete.`;
-
+                    `- Dump HTML: ${dumpFile}`;
                 console.error(`[Scraper - ${this.name}] ${wafAlertMsg}`);
-                
                 await notifier.sendAlert(`EMERGENZA ANTI-BOT: Blocco su ${task.market}`, wafAlertMsg);
                 throw new Error("CAPTCHA_DETECTED");
             }
 
-            if ($('#outOfStock').length > 0) {
+            // 1. Rileva se la pagina è stata dirottata su un altro ASIN (variante sostitutiva)
+            const targetAsin = task.asin.trim().toUpperCase();
+            const pageAsin = this.extractPageAsin($, finalUrl);
+
+            if (pageAsin && pageAsin !== targetAsin) {
+                console.warn(
+                    `[Scraper - ${this.name}] ⚠️ ASIN MISMATCH per ${targetAsin} su ${task.market}!\n` +
+                    `   La pagina è stata dirottata su un'altra variante (ASIN trovato: ${pageAsin}).\n` +
+                    `   L'ASIN originale ${targetAsin} viene contrassegnato come NON DISPONIBILE.`
+                );
                 return this.createEmptyResult(task);
             }
 
-            // 1. Prova di estrazione standard dalla pagina principale
+            // 2. Controllo esplicito Out of Stock
+            if (this.isProductOutOfStock($)) {
+                console.log(`[Scraper - ${this.name}] Prodotto ${task.asin} (${task.market}) non disponibile.`);
+                return this.createEmptyResult(task);
+            }
+
+            // 3. Estrazione standard dalla pagina principale
             let mainPageResult = this.parseProductData($, task);
             let aodRawHtml: string | null = null;
 
-            // 2. Se non ha BuyBox o il prezzo manca, prova l'All Offers Display (AOD)
+            // 4. Se BuyBox assente o prezzo mancante, prova AOD AJAX
             const hasNoBuyBox = $('#unqualifiedBuyBox').length > 0 || $('.apex-core-price-identifier').length === 0;
             const priceMissing = mainPageResult.data?.price === null || mainPageResult.data?.price === undefined;
 
@@ -549,7 +521,7 @@ private async handleLongPauses(): Promise<void> {
                 return mainPageResult;
             }
 
-            // 3. Fallback unificato: eseguito SOLO se entrambe le strade hanno fallito
+            // 5. Fallback finale se entrambe le strade falliscono
             console.warn(`[Scraper - ${this.name}] Estrazione fallita sia su pagina principale che su AOD per ${task.asin} (${task.market}).`);
             await this.performFallbackRegexSearch(html, aodRawHtml, task);
 
@@ -560,7 +532,6 @@ private async handleLongPauses(): Promise<void> {
         }
     }
 
-    // CHIAMATA AJAX REALE ALL' ALL OFFERS DISPLAY (AOD)
     private async extractFromAodAjax(task: Task): Promise<{ result: WorkerResult; rawHtml: string | null }> {
         const aodUrl = `https://www.${task.market}/gp/product/ajax/aodAjaxMain?asin=${task.asin}&m=&qid=${Math.floor(Date.now() / 1000)}&smid=&sourcecustomerorglistid=&sourcecustomerorglistitemid=&sr=8-1&pc=dp&experienceId=aodAjaxMain&pinnedOfferId=&filters=%7B%22all%22%3Atrue%2C%22new%22%3Atrue%7D`;
 
@@ -575,11 +546,12 @@ private async handleLongPauses(): Promise<void> {
         };
 
         try {
-            const aodHtml = await this.fetchHtmlWithRetry(aodUrl, task.market, customHeaders);
+            const { html: aodHtml } = await this.fetchHtmlWithRetry(aodUrl, task.market, customHeaders);
             const $aod = cheerio.load(aodHtml);
 
             let bestPrice: number | null = null;
             let bestShipping: number | null = null;
+            let bestOfferIsSoldByAmazon: boolean = false;
     
             $aod('#aod-offer, #aod-pinned-offer, #all-offers-display-offer').each((_, element) => {
                 const $offer = $aod(element);
@@ -588,7 +560,6 @@ private async handleLongPauses(): Promise<void> {
                 const isNew = conditionRaw.includes('new') || conditionRaw.includes('nuovo') || conditionRaw.includes('neuf') || conditionRaw.includes('neu');
                 if (conditionRaw && !isNew) return true;
 
-                // Estrazione Prezzo
                 const identifierDiv = $offer.find('.apex-core-price-identifier').first();
                 if (identifierDiv.length > 0) {
                     const rawPrice = identifierDiv.attr('data-csa-c-price-to-pay');
@@ -609,8 +580,6 @@ private async handleLongPauses(): Promise<void> {
                     }
                 }
 
-
-                // Estrazione Spedizione
                 if (bestPrice !== null && bestShipping === null) {
                     const rawShipping = identifierDiv.attr('data-csa-c-shipping-charge');
                     const deliveryAttr = $offer.find('[data-csa-c-delivery-price]').first().attr('data-csa-c-delivery-price');
@@ -635,6 +604,9 @@ private async handleLongPauses(): Promise<void> {
                             if (shipMatch) bestShipping = parseFloat(shipMatch[1].replace(',', '.'));
                         }
                     }
+
+                    const soldByText = $offer.find('#aod-offer-soldBy, .aod-seller-info').text().toLowerCase();
+                    bestOfferIsSoldByAmazon = soldByText.includes('amazon');
                 }
 
                 if (bestPrice !== null) return false;
@@ -644,7 +616,6 @@ private async handleLongPauses(): Promise<void> {
                 return { result: this.createEmptyResult(task), rawHtml: aodHtml };
             }
 
-            // 3. QUI: Inseriamo isSoldByAmazon nell'oggetto finale restituito
             return {
                 result: {
                     success: true,
@@ -677,37 +648,24 @@ private async handleLongPauses(): Promise<void> {
 
             if (rawPrice && rawPrice !== "FREE") price = parseFloat(rawPrice);
             if (rawShipping && rawShipping !== "FREE") shippingCost = parseFloat(rawShipping);
-        
-            console.log("DEBUG RAW PRICE:", rawPrice);
         }
 
-        
-        
         if (price === null) {
             const offscreenText = $('.apex-pricetopay-value .a-offscreen').first().text().trim() 
                 || $('#corePrice_feature_div .a-price .a-offscreen').first().text().trim();
                 
             if (offscreenText) {
-                // Rimuove la valuta e spazi, lasciando solo cifre, punti e virgole
                 let clean = offscreenText.replace(/[^\d,.]/g, '').trim();
 
                 if (clean.includes(',') && clean.includes('.')) {
-                    // Caso con entrambi i separatori: es. "1.249,99" (EU) o "1,249.99" (US)
                     const lastDot = clean.lastIndexOf('.');
                     const lastComma = clean.lastIndexOf(',');
-                    
-                    if (lastComma > lastDot) {
-                        // Formato europeo: 1.249,99 -> rimuovi i punti, sostituisci virgola con punto
-                        clean = clean.replace(/\./g, '').replace(',', '.');
-                    } else {
-                        // Formato anglosassone: 1,249.99 -> rimuovi le virgole
-                        clean = clean.replace(/,/g, '');
-                    }
+                    clean = lastComma > lastDot 
+                        ? clean.replace(/\./g, '').replace(',', '.') 
+                        : clean.replace(/,/g, '');
                 } else if (clean.includes(',')) {
-                    // Solo virgola decimale: es. "744,80" -> "744.80"
                     clean = clean.replace(',', '.');
                 }
-                // Se contiene solo il punto (es. "744.80"), clean rimane invariato
 
                 price = parseFloat(clean);
             }
@@ -720,8 +678,16 @@ private async handleLongPauses(): Promise<void> {
         if (price === null || isNaN(price)) return this.createEmptyResult(task);
 
         return {
-            success: true, timestamp: new Date(),
-            data: { asin: task.asin, market: task.market, price, shippingCost: isNaN(shippingCost) ? 0 : shippingCost, currency: "EUR" }
+            success: true, 
+            timestamp: new Date(),
+            data: { 
+                asin: task.asin, 
+                market: task.market, 
+                price, 
+                shippingCost: isNaN(shippingCost) ? 0 : shippingCost, 
+                currency: "EUR",
+                isSoldByAmazon: this.extractIsSoldByAmazon($)
+            }
         };
     }
 
@@ -743,10 +709,13 @@ private async handleLongPauses(): Promise<void> {
     }
 
     // =====================================================================
-    // RESILIENZA E MICRO-RETRY DI RETE
+    // RETRY DI RETE E RITORNO URL FINALE POST-REDIRECT
     // =====================================================================
-    protected async fetchHtmlWithRetry(url: string, market: AmazonMarket, extraHeaders: Record<string, string> = {}): Promise<string> {
-        // Assicura che il cookie jar contenga almeno i cookie di sessione di base
+    protected async fetchHtmlWithRetry(
+        url: string, 
+        market: AmazonMarket, 
+        extraHeaders: Record<string, string> = {}
+    ): Promise<{ html: string; finalUrl: string }> {
         await this.warmUpSession(market);
 
         const defaultHeaders: Record<string, string> = {
@@ -785,7 +754,7 @@ private async handleLongPauses(): Promise<void> {
                         operatingSystems: ['windows']
                     }
                 });
-                return response.body;
+                return { html: response.body, finalUrl: response.url };
             } catch (error: any) {
                 attempt++;
                 if (attempt >= MAX_RETRIES || error.response?.statusCode === 404) throw error;
@@ -803,7 +772,17 @@ private async handleLongPauses(): Promise<void> {
     }
 
     private createEmptyResult(task: Task): WorkerResult {
-        return { success: true, timestamp: new Date(), data: { asin: task.asin, market: task.market, price: null, shippingCost: null, currency: "EUR" } };
+        return { 
+            success: true, 
+            timestamp: new Date(), 
+            data: { 
+                asin: task.asin, 
+                market: task.market, 
+                price: null, 
+                shippingCost: null, 
+                currency: "EUR" 
+            } 
+        };
     }
 
     public async execute(task: Task): Promise<WorkerResult> { 

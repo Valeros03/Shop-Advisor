@@ -6,7 +6,13 @@ import { ProductUpdater } from "./Updater";
 import { notifier } from "./service/NotificationService";
 
 import * as path from "path";
-// --- 1. BASE WORKER ---
+
+
+//__________________________________________________________
+//                                                          |
+//                  ***BASE WORKER***                       |
+//                                                          |
+//__________________________________________________________|
 export abstract class BaseWorker {
     public readonly type: 'api' | 'scraper';
     public readonly name: string;
@@ -37,12 +43,20 @@ export abstract class BaseWorker {
         this.currentLifetimeUsage = initialUsage.lifetime;
     }
 
+    
+    public supportsMarket(market: AmazonMarket): boolean {
+        return this.supportedMarkets.includes(market);
+    }
+
     public hasCapacity(): boolean {
         return this.getRemainingCapacity() > 0;
     }
 
     public getRemainingCapacity(): number {
-        let remaining = this.limits.dailyLimit - this.currentDailyUsage;
+        let remaining = Infinity;
+        if (this.limits.dailyLimit !== -1) {
+            remaining = Math.min(remaining, this.limits.dailyLimit - this.currentDailyUsage);
+        }
         if (this.limits.monthlyLimit !== -1) {
             remaining = Math.min(remaining, this.limits.monthlyLimit - this.currentMonthlyUsage);
         }
@@ -52,33 +66,121 @@ export abstract class BaseWorker {
         return Math.max(0, remaining);
     }
 
-    public supportsMarket(market: AmazonMarket): boolean {
-        return this.supportedMarkets.includes(market);
-    }
-
     public reserveCapacity(): boolean {
         if (!this.hasCapacity()) return false;
-        this.currentDailyUsage++;
-        if (this.limits.monthlyLimit !== -1) this.currentMonthlyUsage++;
-        if (this.limits.lifetimeLimit !== -1) this.currentLifetimeUsage++;
 
-        // Persistenza asincrona non bloccante su PostgreSQL
-        BaseWorker.prismaClient.workerStat.upsert({
-            where: { name: this.name },
-            update: {
-                dailyUsage: { increment: 1 },
-                monthlyUsage: { increment: 1 },
-                lifetimeUsage: { increment: 1 }
-            },
-            create: {
-                name: this.name,
-                dailyUsage: 1,
-                monthlyUsage: 1,
-                lifetimeUsage: 1
-            }
-        }).catch(err => console.error(`[WorkerStat] Errore salvataggio statistiche ${this.name}:`, err.message));
+        const updateData: any = {};
+        const createData: any = { name: this.name, dailyUsage: 0, monthlyUsage: 0, lifetimeUsage: 0 };
+
+        if (this.limits.dailyLimit !== -1) {
+            this.currentDailyUsage++;
+            updateData.dailyUsage = { increment: 1 };
+            createData.dailyUsage = this.currentDailyUsage;
+        }
+
+        if (this.limits.monthlyLimit !== -1) {
+            this.currentMonthlyUsage++;
+            updateData.monthlyUsage = { increment: 1 };
+            createData.monthlyUsage = this.currentMonthlyUsage;
+        }
+
+        if (this.limits.lifetimeLimit !== -1) {
+            this.currentLifetimeUsage++;
+            updateData.lifetimeUsage = { increment: 1 };
+            createData.lifetimeUsage = this.currentLifetimeUsage;
+        }
+
+        // Scrivi su DB solo se c'è almeno un contatore effettivo da tracciare
+        if (Object.keys(updateData).length > 0) {
+            BaseWorker.prismaClient.workerStat.upsert({
+                where: { name: this.name },
+                update: updateData,
+                create: createData
+            }).catch(err => console.error(`[WorkerStat] Errore salvataggio statistiche ${this.name}:`, err.message));
+        }
 
         return true;
+    }
+
+    /**
+     * Sincronizza lo stato ed effettua il rollover giornaliero e mensile.
+     * Controlla se l'aggiornamento è già avvenuto in giornata o nel mese corrente.
+     */
+    public async syncRollover(): Promise<void> {
+        try {
+            const stat = await BaseWorker.prismaClient.workerStat.findUnique({
+                where: { name: this.name }
+            });
+
+            const now = new Date();
+            const nowParts = getItalianDateParts(now);
+
+            if (!stat) {
+                // Prima registrazione del record
+                await BaseWorker.prismaClient.workerStat.create({
+                    data: {
+                        name: this.name,
+                        dailyUsage: 0,
+                        monthlyUsage: 0,
+                        lifetimeUsage: 0,
+                        lastResetDaily: now
+                    }
+                });
+                this.currentDailyUsage = 0;
+                this.currentMonthlyUsage = 0;
+                return;
+            }
+
+            const lastResetParts = getItalianDateParts(stat.lastResetDaily);
+            const isSameDay = lastResetParts.dateKey === nowParts.dateKey;
+            const isSameMonth = lastResetParts.monthKey === nowParts.monthKey;
+
+            const updateData: any = {};
+
+            // 1. VERIFICA GIORNALIERA (Giorno solare di Roma)
+            if (!isSameDay) {
+                // Non è ancora stato aggiornato oggi: azzera dailyUsage (se ha un limite) e marca la data odierna
+                if (this.limits.dailyLimit !== -1) {
+                    this.currentDailyUsage = 0;
+                    updateData.dailyUsage = 0;
+                } else {
+                    this.currentDailyUsage = 0;
+                }
+                updateData.lastResetDaily = now;
+                console.log(`[WorkerStat - ${this.name}] Nuovo giorno (${nowParts.dateKey}): dailyUsage azzerato.`);
+            } else {
+                // Già aggiornato oggi: riallinea la memoria col DB per non perdere il conteggio pre-crash
+                this.currentDailyUsage = this.limits.dailyLimit !== -1 ? stat.dailyUsage : 0;
+                console.log(`[WorkerStat - ${this.name}] Già sincronizzato in giornata (${nowParts.dateKey}). dailyUsage mantenuto a ${this.currentDailyUsage}.`);
+            }
+
+            // 2. VERIFICA MENSILE (Mese solare di Roma)
+            if (!isSameMonth) {
+                // Mese differente rispetto all'ultimo reset: azzera monthlyUsage (se ha un limite)
+                if (this.limits.monthlyLimit !== -1) {
+                    this.currentMonthlyUsage = 0;
+                    updateData.monthlyUsage = 0;
+                } else {
+                    this.currentMonthlyUsage = 0;
+                }
+                console.log(`[WorkerStat - ${this.name}] Nuovo mese (${nowParts.monthKey}): monthlyUsage azzerato.`);
+            } else {
+                // Mese corrente: conserva il conteggio mensile
+                this.currentMonthlyUsage = this.limits.monthlyLimit !== -1 ? stat.monthlyUsage : 0;
+            }
+
+            // Allineamento lifetime
+            this.currentLifetimeUsage = this.limits.lifetimeLimit !== -1 ? stat.lifetimeUsage : 0;
+
+            if (Object.keys(updateData).length > 0) {
+                await BaseWorker.prismaClient.workerStat.update({
+                    where: { name: this.name },
+                    data: updateData
+                });
+            }
+        } catch (err: any) {
+            console.error(`[WorkerStat - ${this.name}] Errore durante syncRollover:`, err.message);
+        }
     }
 
     protected async enforceRateLimit(): Promise<void> {
@@ -112,6 +214,14 @@ interface ScheduledApiTask {
     targetTime: number;
     task: Task;
 }
+
+
+
+//__________________________________________________________
+//                                                          |
+//                  ***API WORKER***                        |
+//                                                          |
+//__________________________________________________________|
 
 export class ApiWorker extends BaseWorker {
     public readonly priorityCost = 1; 
@@ -158,13 +268,12 @@ export class ApiWorker extends BaseWorker {
     public delegateAndOrganizeTasks(assignedTasks: Task[]): void {
         console.log(`[API - ${this.name}] Pianificazione di ${assignedTasks.length} task lungo la timeline...`);
         const now = Date.now();
-        const endOfDay = new Date().setHours(23, 59, 59, 999);
+        
+        const endOfDay = getItalianMidnightTimestamp();
         this.timelineQueue = [];
 
-        // Rispettiamo il targetSlotTime imposto a monte dal Dispatcher
         assignedTasks.forEach((task) => {
             const baseTime = task.targetSlotTime ?? now;
-            // Jitter leggero (±30s) per non creare richieste in simultanea esatta
             const jitter = (Math.random() * 60000) - 30000;
             const targetTime = Math.min(Math.max(baseTime + jitter, now), endOfDay - 1000);
             this.timelineQueue.push({ targetTime, task });
@@ -173,19 +282,9 @@ export class ApiWorker extends BaseWorker {
         this.timelineQueue.sort((a, b) => a.targetTime - b.targetTime);
     }
 
-    private isPastMidnight(): boolean {
-        const parts = new Intl.DateTimeFormat('en-US', {
-            timeZone: 'Europe/Rome',
-            hour: 'numeric',
-            hour12: false
-        }).formatToParts(new Date());
-        const hour = parseInt(parts.find(p => p.type === 'hour')!.value, 10);
-        return hour >= 0 && hour < 7;
-    }
-
     public async executeDailyMission(updater: ProductUpdater): Promise<void> {
         while (this.timelineQueue.length > 0) {
-            if (this.isPastMidnight()) {
+            if (isPastWorkerShift()) {
                 for (const job of this.timelineQueue) {
                     updater.cancelPendingTask(job.task.asin, job.task.market, job.task.cycleIndex ?? 0);
                 }
@@ -200,7 +299,7 @@ export class ApiWorker extends BaseWorker {
                 await new Promise(resolve => setTimeout(resolve, msUntilTarget));
             }
 
-            if (this.isPastMidnight()) {
+            if (isPastWorkerShift()) {
                 updater.cancelPendingTask(scheduledJob.task.asin, scheduledJob.task.market, scheduledJob.task.cycleIndex ?? 0);
                 for (const job of this.timelineQueue) {
                     updater.cancelPendingTask(job.task.asin, job.task.market, job.task.cycleIndex ?? 0);
@@ -246,6 +345,15 @@ interface DispatcherProductRecord extends ProductRecord {
 }
 
 
+
+
+
+
+//__________________________________________________________
+//                                                          |
+//                  ***SMART DISPATCHER***                  |
+//                                                          |
+//__________________________________________________________|
 export class SmartDispatcher {
     private prisma: PrismaClient;
     private updater: ProductUpdater;
@@ -335,28 +443,22 @@ export class SmartDispatcher {
         let plannedUpdates: { product: DispatcherProductRecord; updatesCount: number }[] = [];
         const now = Date.now();
 
-        // Determina le ore 07:00 della giornata operativa odierna sul fuso italiano
-        const { now: italianDate, hour: italianHour } = this.getItalianTime();
-        const operationalStart = new Date(italianDate);
-        if (italianHour < 7) {
-            // Se eseguito prima delle 07:00, la giornata operativa di riferimento è quella di ieri
-            operationalStart.setDate(operationalStart.getDate() - 1);
-        }
-        operationalStart.setHours(7, 0, 0, 0);
+        // 07:00 della giornata operativa corrente
+        const operationalStart = getItalianOperationalStart(new Date(now));
 
         for (const p of products) {
             let updatesToday = 0;
-            const msSinceUpdate = now - p.lastUpdated.getTime();
+            
+            // Protezione se il prodotto è nuovo e non è mai stato aggiornato (lastUpdated = null)
+            const lastUpdatedMs = p.lastUpdated ? p.lastUpdated.getTime() : 0;
+            const msSinceUpdate = now - lastUpdatedMs;
             const hoursSinceUpdate = msSinceUpdate / (1000 * 3600);
 
-            // Se il prodotto è marcato per recupero forzato da ieri
             if (p.mustTomorrow) {
                 updatesToday = 1;
             } else {
                 switch (p.priorityCode) {
                     case 1:
-                        // Priorità 1: 4 volte al giorno (ogni ~6h). 
-                        // Se è stato aggiornato da poco, pianifica solo gli slot residui
                         if (hoursSinceUpdate >= 18) updatesToday = 4;
                         else if (hoursSinceUpdate >= 12) updatesToday = 3;
                         else if (hoursSinceUpdate >= 6) updatesToday = 2;
@@ -364,24 +466,21 @@ export class SmartDispatcher {
                         break;
 
                     case 2:
-                        // Priorità 2: 2 volte al giorno (ogni ~12h)
                         if (hoursSinceUpdate >= 12) updatesToday = 2;
                         else updatesToday = 1;
                         break;
 
                     case 3:
-                        // Priorità 3 (1 volta al giorno lavorativo):
-                        // Se l'ultimo aggiornamento è precedente alle 07:00 di OGGI, va pianificato!
-                        const alreadyUpdatedToday = p.lastUpdated.getTime() >= operationalStart.getTime();
+                        // Se p.lastUpdated è null o precedente alle 07:00 di OGGI, va pianificato
+                        const alreadyUpdatedToday = lastUpdatedMs >= operationalStart.getTime();
 
                         if (!alreadyUpdatedToday) {
                             updatesToday = 1;
                         } else {
-                            // Già fatto oggi: calcoliamo quanto manca alle 07:00 di domani
                             const next7AM = new Date(operationalStart);
                             next7AM.setDate(next7AM.getDate() + 1);
                             const hoursToTomorrow7AM = Math.max(0, (next7AM.getTime() - now) / (1000 * 3600)).toFixed(1);
-                            console.log(`[Dispatcher] Salto ASIN ${p.asin} (Priorità 3): già aggiornato oggi alle ${p.lastUpdated.toLocaleTimeString('it-IT')}. Programmato per domani alle 07:00 (tra ${hoursToTomorrow7AM}h).`);
+                            console.log(`[Dispatcher] Salto ASIN ${p.asin} (Priorità 3): già aggiornato oggi alle ${p.lastUpdated!.toLocaleTimeString('it-IT')}. Prossimo slot: domani alle 07:00 (tra ${hoursToTomorrow7AM}h).`);
                         }
                         break;
 
@@ -481,15 +580,9 @@ export class SmartDispatcher {
         }
 
         // --- FASE D: CALCOLO DELLE 4 MACRO-ONDATE GLOBALI & INTERLEAVING ---
-        const { now: italianNowDate } = this.getItalianTime();
-        
-        // Calcola la mezzanotte italiana usando l'oggetto Date
-        const midnightItalian = new Date(italianNowDate.toLocaleString("en-US", { timeZone: "Europe/Rome" }));
-        midnightItalian.setHours(24, 0, 0, 0);
-
-        // Estrai il timestamp numerico in ms
-        const nowMs = italianNowDate.getTime();
-        const totalWindowMs = Math.max(midnightItalian.getTime() - nowMs, 60000);
+        const nowMs = Date.now();
+        const midnightItalianMs = getItalianMidnightTimestamp();
+        const totalWindowMs = Math.max(midnightItalianMs - nowMs, 60000);
         const NUM_WAVES = 4;
         const waveDurationMs = totalWindowMs / NUM_WAVES;
         
@@ -543,7 +636,7 @@ export class SmartDispatcher {
             validItems.forEach((item, idx) => {
                 const targetSlotTime = Math.min(
                     waveStartTime + (idx * stepMs),
-                    midnightItalian.getTime() - 2000
+                    midnightItalianMs - 2000
                 );
 
                 for (const market of this.MARKETS) {
@@ -568,46 +661,21 @@ export class SmartDispatcher {
         return eligibleWorkers[0];
     }
 
-    // Helper per determinare gli orari precisi sul fuso italiano
-    private getItalianTime(): { hour: number; now: Date } {
-        const now = new Date();
-        const italianHourStr = new Intl.DateTimeFormat('it-IT', {
-            timeZone: 'Europe/Rome',
-            hour: 'numeric',
-            hour12: false
-        }).format(now);
-        return { hour: parseInt(italianHourStr, 10), now };
-    }
 
     public async run(): Promise<void> {
-        console.log("[Dispatcher] Servizio di monitoraggio avviato in modalità continua (24/7)...");
+        console.log("[Dispatcher] Servizio avviato (Turno di lavoro: 07:00 - 00:00 | Tregua: fino alle 00:15 Europe/Rome)...");
 
         const loadedWorkers = await (await import("./factory/WorkerFactory")).WorkerFactory.loadAllWorkers();
         loadedWorkers.forEach(w => { if (!this.workers.some(existing => existing.name === w.name)) { this.registerWorker(w); } });
 
-        // LOOP INFINITO PRINCIPALE DEL DISPATCHER
         while (true) {
             try {
-                const { hour, now } = this.getItalianTime();
-
-                // 1. FASCIA NOTTURNA (00:00 - 07:00)
-                if (hour >= 0 && hour < 7) {
-                    const now = new Date();
-                    
-                    // Ottieni anno, mese e giorno correnti a Roma in formato YYYY-MM-DD
-                    const romeDateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Rome' }).format(now);
-                    
-                    // Crea l'oggetto Date per le 07:00 italiane odierne con offset esplicito
-                    const isDST = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Rome', timeZoneName: 'short' })
-                        .formatToParts(now).find(p => p.type === 'timeZoneName')?.value === 'GMT+2';
-                    const offset = isDST ? '+02:00' : '+01:00';
-                    
-                    const next7AM = new Date(`${romeDateStr}T07:00:00${offset}`);
-
-                    const sleepMs = Math.max(10000, next7AM.getTime() - now.getTime());
+                // 1. BLOCCO NOTTURNO DI SICUREZZA (00:00 - 07:00)
+                // Se il bot viene avviato o si trova di notte, riposa fino alle 07:00
+                if (isPastWorkerShift()) {
+                    const sleepMs = getMsUntilItalianTarget(7, 0);
                     const hoursLeft = (sleepMs / (1000 * 60 * 60)).toFixed(1);
-
-                    console.log(`\n[Dispatcher] Finestra notturna (ore ${hour}:00). Riposo fino alle 07:00 (~${hoursLeft}h)...`);
+                    console.log(`\n[Dispatcher] Riposo notturno attivo. Standby fino alle 07:00 (~${hoursLeft}h)...`);
                     await new Promise(resolve => setTimeout(resolve, sleepMs));
                     console.log(`[Dispatcher] Ore 07:00 raggiunte. Inizio preparazione della giornata operativa!`);
                     continue;
@@ -621,7 +689,12 @@ export class SmartDispatcher {
                 }
 
                 // 3. PIANIFICAZIONE GIORNALIERA (ore 07:00)
-                console.log(`\n[Dispatcher] Pianificazione giornaliera delle scansioni (ore ${hour}:00)...`);
+                console.log(`\n[Dispatcher] Inizio pianificazione delle scansioni odierne...`);
+                
+                for (const worker of this.workers) {
+                    await worker.syncRollover();
+                }
+                
                 const maxCyclesToday = this.simulateGlobalThroughput();
 
                 const rawProducts = await this.prisma.product.findMany({
@@ -656,57 +729,159 @@ export class SmartDispatcher {
                     }
                 }
 
-                // 4. ESECUZIONE DELLA GIORNATA
-                if (missionPromises.length > 0) {
-                    await Promise.all(missionPromises);
+                // 4. ESECUZIONE DELLA GIORNATA (07:00 - 00:00)
+                    if (missionPromises.length > 0) {
+                        // Deadline invalicabile: alle 00:15 i worker devono comunque cedere il passo
+                        const msUntilTruceHardDeadline = getMsUntilItalianTarget(0, 15);
+                        const truceTimeout = new Promise(resolve => setTimeout(resolve, msUntilTruceHardDeadline));
+
+                        // Attende la conclusione naturale (o lo stop di mezzanotte) dei worker, ma non oltre le 00:15
+                        await Promise.race([
+                            Promise.all(missionPromises),
+                            truceTimeout
+                        ]);
+                        console.log("[Dispatcher] Scansioni terminate o finestra di tregua (00:15) conclusa.");
+                    } else {
+                        console.log("[Dispatcher] Nessun task da eseguire per oggi.");
+                    }
+
+                    // Se i worker hanno terminato molto prima di mezzanotte, attendi le 00:00
+                    const msUntilMidnight = getItalianMidnightTimestamp() - Date.now();
+                    if (msUntilMidnight > 0) {
+                        const waitMin = (msUntilMidnight / 60000).toFixed(1);
+                        console.log(`[Dispatcher] Scansioni completate in anticipo. Attesa fino a mezzanotte (~${waitMin} min)...`);
+                        await new Promise(resolve => setTimeout(resolve, msUntilMidnight));
+                    }
+
+                    // 5. CONSOLIDAMENTO FINALE DEI TASK RIMASTI PARZIALI
+                    // Eseguito ORA, dopo che i task in volo hanno avuto il tempo di scrivere nel DB
+                    console.log("[Dispatcher] Chiusura definitiva del turno: consolidamento aggiornamenti parziali...");
                     await this.updater.flushPartialUpdates();
-                    console.log("[Dispatcher] Tutte le scansioni previste per oggi sono state completate.");
-                } else {
-                    console.log("[Dispatcher] Nessun task da eseguire per la giornata odierna.");
+
+                    // 6. RIPOSO NOTTURNO DIRETTO (fino alle 07:00)
+                    const msUntil7AM = getMsUntilItalianTarget(7, 0);
+                    const hoursToMorning = (msUntil7AM / (1000 * 60 * 60)).toFixed(1);
+                    console.log(`[Dispatcher] Giornata conclusa. Standby notturno fino alle 07:00 (~${hoursToMorning}h)...`);
+                    await new Promise(resolve => setTimeout(resolve, msUntil7AM));
+
+                } catch (err: any) {
+                    this.consecutiveFailures++;
+                    console.error(`[Dispatcher] Errore critico nel loop giornaliero (Fallimento #${this.consecutiveFailures}):`, err.message);
+
+                    if (this.consecutiveFailures >= 3) {
+                        await notifier.sendAlert(
+                            "DISPATCHER IN CRASH-LOOP!",
+                            `Il Dispatcher principale ha subito ${this.consecutiveFailures} crash consecutivi.\n\n- Errore: ${err.message}`
+                        );
+                    }
+
+                    await new Promise(resolve => setTimeout(resolve, 30000));
                 }
-
-                // 5. FINESTRA DI TREGUA (15 minuti dopo la mezzanotte: fino alle 00:15)
-                const { hour: currentH } = this.getItalianTime();
-                
-                if (currentH >= 7) {
-                    // Siamo ancora di giorno (es. tra le 07:00 e le 23:59) ma i task sono terminati o capacità esaurita
-                    const now = new Date();
-                    const nextMidnight = new Date();
-                    nextMidnight.setHours(24, 0, 0, 0); // Mezzanotte esatta
-
-                    const msToWait = Math.max(60000, nextMidnight.getTime() - now.getTime());
-                    const minutesWait = (msToWait / (1000 * 60)).toFixed(1);
-                    
-                    console.log(`[Dispatcher] Nessuna ulteriore scansione da effettuare. Attesa fino a mezzanotte (~${minutesWait} min)...`);
-                    await new Promise(resolve => setTimeout(resolve, msToWait));
-                } else {
-                    console.log("[Dispatcher] Scansioni odierne concluse. Il ciclo ripassa alla gestione notturna.");
-                }
-
-                const msUntilTruceEnd = truceTarget.getTime() - currentTime.getTime();
-                if (msUntilTruceEnd > 0) {
-                    const minutesWait = (msUntilTruceEnd / (1000 * 60)).toFixed(1);
-                    console.log(`[Dispatcher] Finestra operativa conclusa. Tregua di sicurezza attiva fino alle 00:15 (~${minutesWait} min)...`);
-                    await new Promise(resolve => setTimeout(resolve, msUntilTruceEnd));
-                }
-
-                console.log("[Dispatcher] Tregua completata. Il ciclo ripassa alla sospensione notturna.");
-             
-            } catch (err: any) {
-                this.consecutiveFailures++;
-                console.error(`[Dispatcher] Errore critico nel loop giornaliero (Fallimento #${this.consecutiveFailures}):`, err.message);
-
-                if (this.consecutiveFailures >= 3) {
-                    await notifier.sendAlert(
-                        "DISPATCHER IN CRASH-LOOP!",
-                        `Il Dispatcher principale ha subito ${this.consecutiveFailures} crash consecutivi.\n\n` +
-                        `- Ultimo Errore: ${err.message}\n` +
-                        `- Stack Trace:\n${err.stack?.slice(0, 1000)}`
-                    );
-                }
-
-                await new Promise(resolve => setTimeout(resolve, 30000));
-            }
         }
     }
+}
+
+
+export function getItalianTime(d = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Europe/Rome',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+    }).formatToParts(d);
+
+    const get = (type: string) => parseInt(parts.find(p => p.type === type)!.value, 10);
+    return {
+        year: get('year'),
+        month: get('month'),
+        day: get('day'),
+        hour: get('hour'),
+        minute: get('minute'),
+        second: get('second')
+    };
+}
+
+/** Verifica se i worker devono fermarsi (00:00 - 07:00) */
+export function isPastWorkerShift(): boolean {
+    const { hour } = getItalianTime();
+    return hour >= 0 && hour < 7;
+}
+
+/** Verifica se il Dispatcher deve dormire (00:15 - 07:00) */
+export function isDispatcherSleepWindow(): boolean {
+    const { hour, minute } = getItalianTime();
+    if (hour === 0) return minute >= 15;
+    return hour < 7;
+}
+
+/** Calcola il timestamp delle 23:59:59.999 odierne (ora di Roma) */
+export function getItalianMidnightTimestamp(): number {
+    const now = new Date();
+    const romeDateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Rome' }).format(now);
+    const isDST = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Rome', timeZoneName: 'short' })
+        .formatToParts(now).find(p => p.type === 'timeZoneName')?.value === 'GMT+2';
+    const offset = isDST ? '+02:00' : '+01:00';
+    return new Date(`${romeDateStr}T23:59:59.999${offset}`).getTime();
+}
+
+/** Millisecondi mancanti a un determinato orario target di Roma (es. 00:15 o 07:00) */
+export function getMsUntilItalianTarget(targetHour: number, targetMinute: number): number {
+    const now = new Date();
+    const parts = getItalianTime(now);
+    const isDST = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Rome', timeZoneName: 'short' })
+        .formatToParts(now).find(p => p.type === 'timeZoneName')?.value === 'GMT+2';
+    const offset = isDST ? '+02:00' : '+01:00';
+    const pad = (n: number) => String(n).padStart(2, '0');
+
+    let targetDate = new Date(`${parts.year}-${pad(parts.month)}-${pad(parts.day)}T${pad(targetHour)}:${pad(targetMinute)}:00${offset}`);
+    
+    // Se l'orario di oggi è già trascorso, punta a quello del giorno successivo
+    if (now.getTime() >= targetDate.getTime()) {
+        const tomorrow = new Date(now.getTime() + 24 * 3600 * 1000);
+        const tomParts = getItalianTime(tomorrow);
+        targetDate = new Date(`${tomParts.year}-${pad(tomParts.month)}-${pad(tomParts.day)}T${pad(targetHour)}:${pad(targetMinute)}:00${offset}`);
+    }
+
+    return Math.max(1000, targetDate.getTime() - now.getTime());
+}
+
+
+export function getItalianOperationalStart(now = new Date()): Date {
+    const parts = getItalianTime(now);
+    const isDST = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Rome', timeZoneName: 'short' })
+        .formatToParts(now).find(p => p.type === 'timeZoneName')?.value === 'GMT+2';
+    const offset = isDST ? '+02:00' : '+01:00';
+    const pad = (n: number) => String(n).padStart(2, '0');
+
+    const today7AM = new Date(`${parts.year}-${pad(parts.month)}-${pad(parts.day)}T07:00:00${offset}`);
+
+    // Se per qualsiasi motivo viene chiamata tra le 00:00 e le 06:59, 
+    // l'inizio del turno operativo di riferimento è quello di ieri alle 07:00
+    if (parts.hour < 7) {
+        return new Date(today7AM.getTime() - 24 * 3600 * 1000);
+    }
+    return today7AM;
+}
+
+
+export function getItalianDateParts(d: Date = new Date()) {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Europe/Rome',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+    }).formatToParts(d);
+
+    const year = parts.find(p => p.type === 'year')!.value;
+    const month = parts.find(p => p.type === 'month')!.value;
+    const day = parts.find(p => p.type === 'day')!.value;
+
+    return {
+        dateKey: `${year}-${month}-${day}`, // es. "2026-10-06"
+        monthKey: `${year}-${month}`        // es. "2026-10"
+    };
 }

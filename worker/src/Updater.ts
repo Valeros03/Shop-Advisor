@@ -25,7 +25,6 @@ export interface PriceSnapshot {
 
 export class ProductUpdater {
     private prisma: PrismaClient;
-    // Chiave univoca: `${asin}_cycle_${cycleIndex}`
     private pendingUpdates: Map<string, PendingAsinState> = new Map();
 
     private readonly VAT_RATES: Record<string, number> = {
@@ -37,6 +36,32 @@ export class ProductUpdater {
 
     constructor(prisma: PrismaClient) {
         this.prisma = prisma;
+    }
+
+    private getItalianOperationalStart(now = new Date()): Date {
+        const parts = new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Europe/Rome',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            hour12: false
+        }).formatToParts(now);
+
+        const get = (type: string) => parseInt(parts.find(p => p.type === type)!.value, 10);
+        const hour = get('hour');
+        const isDST = new Intl.DateTimeFormat('en-US', { timeZone: 'Europe/Rome', timeZoneName: 'short' })
+            .formatToParts(now).find(p => p.type === 'timeZoneName')?.value === 'GMT+2';
+        const offset = isDST ? '+02:00' : '+01:00';
+        const pad = (n: number) => String(n).padStart(2, '0');
+
+        const today7AM = new Date(`${parts.find(p => p.type === 'year')!.value}-${pad(get('month'))}-${pad(get('day'))}T07:00:00${offset}`);
+
+        // Se chiamata tra le 00:00 e le 06:59, il turno di riferimento è iniziato ieri alle 07:00
+        if (hour < 7) {
+            return new Date(today7AM.getTime() - 24 * 3600 * 1000);
+        }
+        return today7AM;
     }
 
     private getKey(asin: string, cycleIndex: number = 0): string {
@@ -91,15 +116,14 @@ export class ProductUpdater {
     }
 
     private calculateLandedCost(product: NormalizedProduct): number | null {
+        // Se price è null (prodotto non disponibile/dirottato), il costo a terra è null
         if (product.price === null) return null;
 
-        // Su amazon.it non c'è conguaglio
         if (product.market === "amazon.it") {
             const shipping = product.shippingCost ?? 0;
             return Math.round((product.price + shipping) * 100) / 100;
         }
 
-        // Su DE (19%) e FR (20%) scorpora l'IVA d'origine e riapplica il 22% italiano
         const localVat = this.VAT_RATES[product.market] || this.TARGET_VAT;
         const priceWithoutVat = product.price / (1 + localVat);
         const normalizedPrice = priceWithoutVat * (1 + this.TARGET_VAT);
@@ -134,6 +158,11 @@ export class ProductUpdater {
         const frLandedCost = frEntry ? this.calculateLandedCost(frEntry.data) : undefined;
         const deLandedCost = deEntry ? this.calculateLandedCost(deEntry.data) : undefined;
 
+        // Log espliciti di non disponibilità
+        if (itLandedCost === null) console.log(`[Updater] ℹ️ ASIN ${asin} non disponibile su amazon.it (prezzo -> null)`);
+        if (frLandedCost === null) console.log(`[Updater] ℹ️ ASIN ${asin} non disponibile su amazon.fr (prezzo -> null)`);
+        if (deLandedCost === null) console.log(`[Updater] ℹ️ ASIN ${asin} non disponibile su amazon.de (prezzo -> null)`);
+
         const changedIT = itLandedCost !== undefined && itLandedCost !== currentProduct.currentPriceIT;
         const changedFR = frLandedCost !== undefined && frLandedCost !== currentProduct.currentPriceFR;
         const changedDE = deLandedCost !== undefined && deLandedCost !== currentProduct.currentPriceDE;
@@ -142,31 +171,26 @@ export class ProductUpdater {
         let newPriority = currentProduct.priorityCode;
         let newUnchangedCount = currentProduct.unchangedCount;
         const isTrackedByUser = currentProduct._count.alerts > 0;
-
-        // Limite massimo di declassamento (7 se non tracciato, 3 se tracciato da utenti)
         const maxDemotion = isTrackedByUser ? 3 : 7;
 
         if (isPriceChanged) {
             newUnchangedCount = 0;
-            // REGOLA: Promozione a priorità 2 o 1 consentita SOLO se monitorato da utenti
             if (isTrackedByUser) {
                 newPriority = Math.max(1, currentProduct.priorityCode - 1);
-                console.log(`[Updater] Prodotto tracciato ${asin} promosso a priorità ${newPriority}`);
             } else {
                 newPriority = Math.max(3, currentProduct.priorityCode - 1);
-                console.log(`[Updater] Cambio prezzo rilevato per ${asin} (non tracciato). Priorità vincolata: ${newPriority}`);
             }
         } else {
             newUnchangedCount += 1;
             if (newUnchangedCount >= 3) {
                 newPriority = Math.min(maxDemotion, currentProduct.priorityCode + 1);
                 newUnchangedCount = 0; 
-                console.log(`[Updater] Declassamento per ${asin}. Nuova priorità: ${newPriority}`);
             }
         }
 
         const appendHistory = (currentHistory: unknown, entry?: ResultEntry, landedCost?: number | null): PriceSnapshot[] => {
             const list = Array.isArray(currentHistory) ? (currentHistory as PriceSnapshot[]) : [];
+            // Non aggiunge snapshot se il prodotto è esaurito/null
             if (!entry || landedCost === null || landedCost === undefined) return list;
             
             return [...list, { 
@@ -176,20 +200,20 @@ export class ProductUpdater {
             }];
         };
 
-        // Aggiornamento atomico nel database
+        // Salvataggio nel database: se itLandedCost è null, sovrascrive a null
         await this.prisma.product.update({
             where: { asin },
             data: {
                 currentPriceIT: itLandedCost !== undefined ? itLandedCost : currentProduct.currentPriceIT,
-                shippingIT: itEntry !== undefined ? itEntry.data.shippingCost : undefined,
+                shippingIT: itEntry !== undefined ? (itEntry.data.price === null ? null : itEntry.data.shippingCost) : undefined,
                 historyIT: appendHistory(currentProduct.historyIT, itEntry, itLandedCost) as any,
 
                 currentPriceFR: frLandedCost !== undefined ? frLandedCost : currentProduct.currentPriceFR,
-                shippingFR: frEntry !== undefined ? frEntry.data.shippingCost : undefined,
+                shippingFR: frEntry !== undefined ? (frEntry.data.price === null ? null : frEntry.data.shippingCost) : undefined,
                 historyFR: appendHistory(currentProduct.historyFR, frEntry, frLandedCost) as any,
 
                 currentPriceDE: deLandedCost !== undefined ? deLandedCost : currentProduct.currentPriceDE,
-                shippingDE: deEntry !== undefined ? deEntry.data.shippingCost : undefined,
+                shippingDE: deEntry !== undefined ? (deEntry.data.price === null ? null : deEntry.data.shippingCost) : undefined,
                 historyDE: appendHistory(currentProduct.historyDE, deEntry, deLandedCost) as any,
 
                 priorityCode: newPriority,
@@ -201,9 +225,8 @@ export class ProductUpdater {
 
         console.log(`[Updater] ASIN ${asin} consolidato nel database.`);
 
-        // 3. Prepariamo tutti i prezzi validi correnti (usando il valore appena estratto o l'ultimo presente nel DB)
+        // Filtra solo i mercati con un prezzo positivo valido per non inviare falsi allarmi
         const marketPrices: { market: string; price: number }[] = [];
-
         const finalIT = itLandedCost !== undefined ? itLandedCost : currentProduct.currentPriceIT;
         const finalFR = frLandedCost !== undefined ? frLandedCost : currentProduct.currentPriceFR;
         const finalDE = deLandedCost !== undefined ? deLandedCost : currentProduct.currentPriceDE;
@@ -212,7 +235,6 @@ export class ProductUpdater {
         if (typeof finalFR === 'number' && finalFR > 0) marketPrices.push({ market: 'amazon.fr', price: finalFR });
         if (typeof finalDE === 'number' && finalDE > 0) marketPrices.push({ market: 'amazon.de', price: finalDE });
 
-        // Se abbiamo almeno un mercato con prezzo valido, eseguiamo la notifica degli alert
         if (marketPrices.length > 0) {
             await this.checkAndTriggerAlerts(
                 currentProduct.id, 
@@ -232,10 +254,8 @@ export class ProductUpdater {
         marketPrices: { market: string; price: number }[]
     ): Promise<void> {
         try {
-            // Troviamo il prezzo minimo assoluto tra i mercati scansionati
             const absoluteLowest = Math.min(...marketPrices.map(m => m.price));
 
-            // Cerchiamo tutti gli alert attivi con target compatibile
             const triggeredAlerts = await this.prisma.alert.findMany({
                 where: {
                     productId,
@@ -248,7 +268,6 @@ export class ProductUpdater {
             if (triggeredAlerts.length === 0) return;
 
             for (const alert of triggeredAlerts) {
-                // Filtra solo i mercati che rispettano il target impostato dall'utente
                 const qualifying = marketPrices.filter(m => m.price <= alert.targetPrice);
                 if (qualifying.length === 0) continue;
 
@@ -256,14 +275,9 @@ export class ProductUpdater {
                 const bestMarketEntry = qualifying[0];
                 const currentBestPrice = bestMarketEntry.price;
 
-                // --- CONTROLLO MEMORIA PREZZO ---
-                // Notifica se è la prima volta (null) oppure se il prezzo è sceso ulteriormente / cambiato
                 const hasPriceChanged = alert.lastNotifiedPrice === null || alert.lastNotifiedPrice === undefined || currentBestPrice < alert.lastNotifiedPrice;
 
-                if (!hasPriceChanged) {
-                    // Prezzo già notificato in precedenza e non è sceso ulteriormente: evitiamo lo spam
-                    continue;
-                }
+                if (!hasPriceChanged) continue;
 
                 const telegramIdStr = alert.user.telegramId.toString();
 
@@ -280,8 +294,6 @@ export class ProductUpdater {
 
                 if (result === "SENT") {
                     console.log(`[Updater] Alert notificato a Telegram per utente ${alert.userId} su ASIN ${asin} (Nuovo prezzo: ${currentBestPrice}€)`);
-                    
-                    // Salviamo il nuovo prezzo notificato MANTENENDO l'alert attivo
                     await this.prisma.alert.update({
                         where: { id: alert.id },
                         data: {
@@ -319,26 +331,24 @@ export class ProductUpdater {
 
         for (const [key, state] of this.pendingUpdates.entries()) {
             if (state.results.size > 0) {
-                // Abbiamo almeno un mercato valido: consolidiamo i dati raccolti
                 await this.commitProductUpdate(state.asin, Array.from(state.results.values()));
             } else {
-                // Nessun mercato valido registrato in questo ciclo interrotto
                 incompleteAsins.add(state.asin);
             }
         }
         this.pendingUpdates.clear();
 
-        // Controllo selettivo: imposta mustTomorrow SOLO se non è stato mai aggiornato oggi
         if (incompleteAsins.size > 0) {
-            const todayStart = new Date();
-            todayStart.setHours(0, 0, 0, 0);
+            // Calcola le 07:00 del turno operativo appena concluso
+            const operationalStart = this.getItalianOperationalStart(new Date());
 
+            // Seleziona solo i prodotti che NON sono mai stati aggiornati durante l'intero turno (dalle 07:00 a mezzanotte)
             const productsWithoutTodayUpdate = await this.prisma.product.findMany({
                 where: {
                     asin: { in: Array.from(incompleteAsins) },
                     OR: [
                         { lastUpdated: null },
-                        { lastUpdated: { lt: todayStart } }
+                        { lastUpdated: { lt: operationalStart } }
                     ]
                 },
                 select: { asin: true }
