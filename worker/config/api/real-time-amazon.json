@@ -1,6 +1,6 @@
 {
   "name": "RapidAPI Real-Time Amazon Data",
-  "api_key": "c029f16234msh6b63944114b1277p1241f0jsn5adaeae7789f",
+  "api_key": "XXX",
   "adapter": "RealTimeAmazonDataAdapter",
   "limits": {
     "dailyLimit": 3,
