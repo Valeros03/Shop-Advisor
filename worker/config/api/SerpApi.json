@@ -1,6 +1,6 @@
 {
   "name": "SerpApi",
-  "api_key": "94fb6689027e071a1d8bfb544b7f652981359e897b3c790223b7803ad5a824ec",
+  "api_key": "XXX",
   "adapter": "SerpApiAdapter",
   "limits": {
     "dailyLimit": 7,
