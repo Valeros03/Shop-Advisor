@@ -1,0 +1,507 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<UnifiedFallbackInspection asin="B0CTHXMYL8" market="amazon.fr" timestamp="2026-10-10T06:24:51.908Z">
+  <MainPageInspection totalMatches="164">
+    <Prices count="162">
+      <Match tag="div" id="usedBuySection" class="rbbHeader dp-accordion-row">
+        <Text>Acheter D&apos;occasion : 521,55 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-grid-vertical-align a-grid-center">
+        <Text>Acheter D&apos;occasion : 521,55 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12 a-text-left">
+        <Text>Acheter D&apos;occasion : 521,55 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-size-base a-color-price offer-price a-text-normal">
+        <Text>521,55 €</Text>
+      </Match>
+      <Match tag="div" id="usedDeliveryBlockContainer" class="a-row">
+        <Text>Livraison à 6,09 € lundi 19 octobre Votre adresse de livraison: Italie</Text>
+      </Match>
+      <Match tag="div" id="deliveryBlock_feature_div" class="a-section a-spacing-none">
+        <Text>Livraison à 6,09 € lundi 19 octobre</Text>
+      </Match>
+      <Match tag="div" id="deliveryBlockMessage" class="a-section">
+        <Text>Livraison à 6,09 € lundi 19 octobre</Text>
+      </Match>
+      <Match tag="div" id="mir-layout-DELIVERY_BLOCK" class="">
+        <Text>Livraison à 6,09 € lundi 19 octobre</Text>
+      </Match>
+      <Match tag="div" id="mir-layout-DELIVERY_BLOCK-slot-PRIMARY_DELIVERY_MESSAGE_LARGE" class="a-spacing-base">
+        <Text>Livraison à 6,09 € lundi 19 octobre</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none daodi-content">
+        <Text>Neuf &amp; D&apos;occasion (14) dès 521,55€521,55€ + 6,09 € Livraison</Text>
+      </Match>
+      <Match tag="span" id="" class="a-declarative">
+        <Text>Neuf &amp; D&apos;occasion (14) dès 521,55€521,55€ + 6,09 € Livraison</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price">
+        <Text>521,55€521,55€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>521,55€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-color-base">
+        <Text>+ 6,09 € Livraison</Text>
+      </Match>
+      <Match tag="span" id="" class="a-color-secondary a-size-base">
+        <Text>+ 6,09 € Livraison</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section apex-core-price-identifier">
+        <Text>521,55 € 521,55€</Text>
+      </Match>
+      <Match tag="span" id="apex-pricetopay-accessibility-label" class="aok-offscreen">
+        <Text>521,55 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price aok-align-center reinventPricePriceToPayMargin priceToPay apex-pricetopay-value">
+        <Text>521,55€</Text>
+      </Match>
+      <Match tag="span" id="price-block-message" class="price-block-message">
+        <Text>Ou 133,38€133,38€ x4 mois(2,3% de frais inclus)</Text>
+      </Match>
+      <Match tag="span" id="option-selection-message" class="">
+        <Text>Ou 133,38€133,38€ x4 mois(2,3% de frais inclus)</Text>
+      </Match>
+      <Match tag="span" id="" class="price-block-label">
+        <Text>Ou 133,38€133,38€</Text>
+      </Match>
+      <Match tag="span" id="price-block-amount" class="highlight">
+        <Text>133,38€133,38€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price">
+        <Text>133,38€133,38€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>133,38€</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section payment-option-onetimepayment-heading payment-options-onetimepayment-text-container">
+        <Text>Paiement en 1 fois: 521,55 € Sélectionnez</Text>
+      </Match>
+      <Match tag="span" id="" class="a-size-medium">
+        <Text>Paiement en 1 fois: 521,55 €</Text>
+      </Match>
+      <Match tag="span" id="monthlyPaymentInfo0" class="a-text-bold">
+        <Text>521,55 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section monthly-payment-table-payment-details-column-value">
+        <Text>133,38 €/x 4* x 4</Text>
+      </Match>
+      <Match tag="span" id="monthlyPaymentInfo01" class="a-text-bold">
+        <Text>133,38 €/x 4*</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-text-center payment-option-interest-row-value interest-row-01">
+        <Text>11,97 € (frais: 2.3%)</Text>
+      </Match>
+      <Match tag="span" id="interestAmount01" class="">
+        <Text>11,97 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section monthly-payment-table-payment-details-column-value">
+        <Text>177,94 €/mo* x 3</Text>
+      </Match>
+      <Match tag="span" id="monthlyPaymentInfo02" class="a-text-bold">
+        <Text>177,94 €/mo*</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-text-center payment-option-interest-row-value interest-row-02">
+        <Text>12,28 € (TAEG fixe: 15%)</Text>
+      </Match>
+      <Match tag="span" id="interestAmount02" class="">
+        <Text>12,28 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-color-price">
+        <Text>525,95 €525,95€</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>525,95 €525,95€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>525,95 €525,95€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>525,95 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 6,08 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 6,08 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 6,08 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 6,08 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 6,08 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-color-price">
+        <Text>489,99 €489,99€</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>489,99 €489,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>489,99 €489,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>489,99 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 6,18 € sam. 17 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 6,18 € sam. 17 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 6,18 € sam. 17 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 6,18 € sam. 17 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 6,18 € sam. 17 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-color-price">
+        <Text>459,99 €459,99€</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>459,99 €459,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>459,99 €459,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>459,99 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 6,18 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 6,18 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 6,18 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 6,18 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 6,18 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-color-price">
+        <Text>619,99 €619,99€</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>619,99 €619,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>619,99 €619,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>619,99 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 6,22 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 6,22 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 6,22 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 6,22 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 6,22 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-color-price">
+        <Text>495,99 €495,99€</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>495,99 €495,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>495,99 €495,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>495,99 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 6,20 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 6,20 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 6,20 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 6,20 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 6,20 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-color-price">
+        <Text>248,99 €248,99€</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>248,99 €248,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>248,99 €248,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>248,99 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 6,12 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 6,12 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 6,12 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 6,12 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 6,12 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>49,49 €49,49€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>49,49 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>Conseillé : 59,90 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price a-text-price apex-basis-price-value">
+        <Text>null59,90€</Text>
+      </Match>
+      <Match tag="span" id="" class="">
+        <Text>59,90€</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 7,93 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 7,93 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 7,93 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 7,93 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 7,93 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>104,90 €104,90€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>104,90 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>Conseillé : 129,90 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price a-text-price apex-basis-price-value">
+        <Text>null129,90€</Text>
+      </Match>
+      <Match tag="span" id="" class="">
+        <Text>129,90€</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 8,76 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 8,76 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 8,76 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 8,76 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 8,76 € mar. 13 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-color-price">
+        <Text>256,74 €256,74€</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>256,74 €256,74€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>256,74 €256,74€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>256,74 €</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 10,57 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 10,57 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 10,57 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 10,57 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 10,57 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 6,16 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 6,16 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 6,16 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 6,16 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 6,16 € lun. 19 oct.</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>124,90 €124,90€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>124,90 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>Conseillé : 154,90 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price a-text-price apex-basis-price-value">
+        <Text>null154,90€</Text>
+      </Match>
+      <Match tag="span" id="" class="">
+        <Text>154,90€</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 9,29 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 9,29 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 9,29 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 9,29 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 9,29 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price apex-price-to-pay-value">
+        <Text>84,99 €84,99€</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>84,99 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>Conseillé : 114,90 €</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price a-text-price apex-basis-price-value">
+        <Text>null114,90€</Text>
+      </Match>
+      <Match tag="span" id="" class="">
+        <Text>114,90€</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row">
+        <Text>Livraison à 7,91 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal a-text-normal">
+        <Text>Livraison à 7,91 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none a-padding-none udm-delivery-block">
+        <Text>Livraison à 7,91 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-row a-size-small a-color-base udm-primary-delivery-message">
+        <Text>Livraison à 7,91 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-column a-span12">
+        <Text>Livraison à 7,91 € mer. 14 oct.</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none">
+        <Text>€98,99€98,99</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal _multi-brand-video-desktop_Link_link__2AMAT _multi-brand-video-desktop_style_priceLinkContainer__6y-Wc a-text-normal">
+        <Text>€98,99€98,99</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price">
+        <Text>€98,99€98,99</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>€98,99</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none">
+        <Text>€525,95€525,95</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal _multi-brand-video-desktop_Link_link__2AMAT _multi-brand-video-desktop_style_priceLinkContainer__6y-Wc a-text-normal">
+        <Text>€525,95€525,95</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price">
+        <Text>€525,95€525,95</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>€525,95</Text>
+      </Match>
+      <Match tag="div" id="" class="a-section a-spacing-none">
+        <Text>€547,08€547,08</Text>
+      </Match>
+      <Match tag="a" id="" class="a-link-normal _multi-brand-video-desktop_Link_link__2AMAT _multi-brand-video-desktop_style_priceLinkContainer__6y-Wc a-text-normal">
+        <Text>€547,08€547,08</Text>
+      </Match>
+      <Match tag="span" id="" class="a-price">
+        <Text>€547,08€547,08</Text>
+      </Match>
+      <Match tag="span" id="" class="a-offscreen">
+        <Text>€547,08</Text>
+      </Match>
+      <Match tag="span" id="" class="aui-primitive __SAR2l0zNyyuZ">
+        <Text>Edit : le prix était de 90€ lorsque je l&apos;ai acheté. Les temps changent...</Text>
+      </Match>
+      <Match tag="div" id="" class="a-cardui-body _Y3Itd_no-padding_1A9ha">
+        <Text>Elle est excellente, elle marche super bien pour 389 € super qualité prix</Text>
+      </Match>
+      <Match tag="div" id="" class="a-reactive-container">
+        <Text>Elle est excellente, elle marche super bien pour 389 € super qualité prix</Text>
+      </Match>
+      <Match tag="div" id="" class="">
+        <Text>Elle est excellente, elle marche super bien pour 389 € super qualité prix</Text>
+      </Match>
+      <Match tag="div" id="" class="a-cardui-content a-cardui-uninitialized">
+        <Text>Elle est excellente, elle marche super bien pour 389 € super qualité prix</Text>
+      </Match>
+      <Match tag="div" id="" class="_Y3Itd_relative_1SChh">
+        <Text>Elle est excellente, elle marche super bien pour 389 € super qualité prix</Text>
+      </Match>
+      <Match tag="div" id="" class="_Y3Itd_contain-rich-content_2IORW">
+        <Text>Elle est excellente, elle marche super bien pour 389 € super qualité prix</Text>
+      </Match>
+    </Prices>
+    <Shipping count="2">
+      <Match tag="div" id="" class="nav-div">
+        <Text>Livraison gratuite</Text>
+      </Match>
+      <Match tag="a" id="" class="nav-a  ">
+        <Text>Livraison gratuite</Text>
+      </Match>
+    </Shipping>
+  </MainPageInspection>
+  <AodAjaxInspection totalMatches="0">
+    <Prices count="0">
+    </Prices>
+    <Shipping count="0">
+    </Shipping>
+  </AodAjaxInspection>
+</UnifiedFallbackInspection>

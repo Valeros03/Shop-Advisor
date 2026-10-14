@@ -3,7 +3,7 @@
   "api_key": "94fb6689027e071a1d8bfb544b7f652981359e897b3c790223b7803ad5a824ec",
   "adapter": "SerpApiAdapter",
   "limits": {
-    "dailyLimit": 3,
+    "dailyLimit": 7,
     "monthlyLimit": 250,
     "lifetimeLimit": -1,
     "rateLimitTps": 2

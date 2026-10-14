@@ -19,14 +19,34 @@ export class SerpApiAdapter implements ApiAdapter {
     public extractData(rawResponse: any): NormalizedProduct {
         const product = rawResponse.product_results || {};
         const market = rawResponse.search_parameters?.amazon_domain || "amazon.it";
-        const asin = rawResponse.search_parameters?.asin || "UNKNOWN";
+        
+        // L'ASIN che hai richiesto all'API
+        const requestedAsin = rawResponse.search_parameters?.asin || "UNKNOWN";
+        
+        // L'ASIN che SerpApi ha effettivamente trovato ed estratto dalla pagina
+        const scrapedAsin = product.asin; 
+
+        // 1. Controllo Anti Soft-Redirect
+        if (scrapedAsin && requestedAsin !== "UNKNOWN" && scrapedAsin.toUpperCase() !== requestedAsin.toUpperCase()) {
+            console.warn(`[SerpApi] Mismatch ASIN rilevato: richiesto ${requestedAsin}, ottenuto ${scrapedAsin}.`);
+            return {
+                asin: requestedAsin,
+                market,
+                price: null,
+                shippingCost: 0,
+                currency: "EUR",
+                title: undefined,
+                imageUrl: undefined
+            } as any;
+        }
 
         const title = product.title || undefined;
         const imageUrl = product.main_image || (product.images && product.images.length > 0 ? product.images[0] : undefined);
 
+        // 2. Controllo Prodotto non disponibile o senza prezzo
         if (product.extracted_price === undefined || product.extracted_price === null) {
             return {
-                asin,
+                asin: requestedAsin,
                 market,
                 price: null,
                 shippingCost: 0,
@@ -58,7 +78,7 @@ export class SerpApiAdapter implements ApiAdapter {
         }
 
         return {
-            asin,
+            asin: requestedAsin, // Restituiamo sempre quello richiesto per non corrompere il DB
             market,
             price: product.extracted_price,
             shippingCost: shipping,

@@ -1,0 +1,12 @@
+{
+  "name": "RapidAPI Real-Time Amazon Data",
+  "api_key": "c029f16234msh6b63944114b1277p1241f0jsn5adaeae7789f",
+  "adapter": "RealTimeAmazonDataAdapter",
+  "limits": {
+    "dailyLimit": 3,
+    "monthlyLimit": 100,
+    "lifetimeLimit": -1,
+    "rateLimitTps": 5
+  },
+  "supported_markets": ["amazon.it"]
+}

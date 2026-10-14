@@ -242,17 +242,7 @@ export class CustomScraperWorker extends BaseWorker {
     // RILEVAMENTO DIROTTAMENTO ASIN E STATO OUT OF STOCK
     // =====================================================================
     private extractPageAsin($: cheerio.CheerioAPI, finalUrl?: string): string | null {
-        if (finalUrl) {
-            const urlMatch = finalUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
-            if (urlMatch) return urlMatch[1].toUpperCase();
-        }
-
-        const canonical = $('link[rel="canonical"]').attr('href');
-        if (canonical) {
-            const canonicalMatch = canonical.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
-            if (canonicalMatch) return canonicalMatch[1].toUpperCase();
-        }
-
+        // 1. Priorità assoluta (DOM Inputs): La vera fonte di verità per la variante caricata
         const inputAsin = $('#ASIN').val() || $('input[name="ASIN"]').val() || $('input[name="idx.asin"]').val();
         if (inputAsin && typeof inputAsin === 'string') {
             const clean = inputAsin.trim().toUpperCase();
@@ -263,6 +253,19 @@ export class CustomScraperWorker extends BaseWorker {
         if (formAsin && typeof formAsin === 'string') {
             const clean = formAsin.trim().toUpperCase();
             if (clean.length === 10) return clean;
+        }
+
+        // 2. Fallback: Tag Canonical
+        const canonical = $('link[rel="canonical"]').attr('href');
+        if (canonical) {
+            const canonicalMatch = canonical.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+            if (canonicalMatch) return canonicalMatch[1].toUpperCase();
+        }
+
+        // 3. Fallback finale: finalUrl (inaffidabile in caso di soft-redirect senza 301)
+        if (finalUrl) {
+            const urlMatch = finalUrl.match(/\/(?:dp|gp\/product)\/([A-Z0-9]{10})/i);
+            if (urlMatch) return urlMatch[1].toUpperCase();
         }
 
         return null;
